@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CMS HCC Risk Scoring Assistant</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+
+    <!-- Sidebar: Patient Demographics -->
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-header">
+        <span class="sidebar-title">Patient Demographics</span>
+        <button class="sidebar-toggle" id="sidebarToggle" title="Collapse">&#x2715;</button>
+      </div>
+
+      <div class="sidebar-body">
+        <label class="field-label">Date of Birth
+          <input type="date" id="dob" value="1950-01-21" />
+        </label>
+
+        <label class="field-label">Sex
+          <select id="sex">
+            <option value="2">Female</option>
+            <option value="1">Male</option>
+          </select>
+        </label>
+
+        <label class="field-label">Original Entitlement (OREC)
+          <select id="orec">
+            <option value="0">0 – Aged / OASI</option>
+            <option value="1">1 – Disabled / DIB</option>
+            <option value="2">2 – ESRD</option>
+            <option value="3">3 – DIB + ESRD</option>
+          </select>
+        </label>
+
+        <label class="field-label">Medicare / Medicaid Dual Status
+          <select id="dual_status">
+            <option value="0">Non-Dual</option>
+            <option value="1">Partial-Benefit Dual</option>
+            <option value="2">Full-Benefit Dual</option>
+          </select>
+        </label>
+
+        <label class="field-label row">
+          <input type="checkbox" id="ltimcaid" />
+          Long-Term Institutional Medicaid
+        </label>
+
+        <label class="field-label row">
+          <input type="checkbox" id="nemcaid" />
+          New Enrollee Medicaid
+        </label>
+
+        <div class="sidebar-note">
+          Age is calculated as of <strong>Feb 1, 2027</strong> (CMS payment-year cutoff).
+        </div>
+
+        <div id="statusBadge" class="status-badge initializing">
+          ● Initializing…
+        </div>
+      </div>
+    </aside>
+
+    <!-- Sidebar collapsed tab -->
+    <button class="sidebar-open-btn" id="sidebarOpenBtn" title="Patient Demographics">&#9776; Demographics</button>
+
+    <!-- Main chat area -->
+    <main class="chat-area">
+      <header class="chat-header">
+        <div class="chat-header-left">
+          <div class="chat-logo">&#9877;</div>
+          <div>
+            <div class="chat-title">CMS HCC Risk Scoring Assistant</div>
+            <div class="chat-subtitle">ICD-10 Mapping · HCC Calculation · CMS Model v22, Payment Year 2027</div>
+          </div>
+        </div>
+        <button class="clear-btn" id="clearBtn">Clear Chat</button>
+      </header>
+
+      <div class="messages" id="messages">
+        <div class="message bot">
+          <div class="avatar">🏥</div>
+          <div class="bubble">
+            <p>Hello! I can analyze patient clinical notes to:</p>
+            <ol>
+              <li>Identify and map diagnoses to <strong>ICD-10-CM codes</strong></li>
+              <li>Calculate <strong>CMS HCC v22 risk scores</strong> for all 9 payment models</li>
+            </ol>
+            <p>Paste your clinical notes below, or ask me any question about HCC coding and risk adjustment.</p>
+            <p class="hint">💡 Set patient demographics in the left panel before submitting notes for accurate scores.</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="input-area">
+        <textarea
+          id="msgInput"
+          placeholder="Paste clinical notes here, or ask a question…"
+          rows="3"
+        ></textarea>
+        <button class="send-btn" id="sendBtn">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <line x1="22" y1="2" x2="11" y2="13"></line>
+            <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+          </svg>
+        </button>
+      </div>
+    </main>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

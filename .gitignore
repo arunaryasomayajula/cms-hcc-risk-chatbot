@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+.eggs/
+venv/
+env/
+.venv/
+*.egg
+
+# ChromaDB vector index (rebuilt automatically on first run)
+backend/chroma_db/
+
+# Environment / secrets
+.env
+.env.*
+*.env
+
+# Logs
+*.log
+backend/logs/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Jupyter
+.ipynb_checkpoints/
