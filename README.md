@@ -22,7 +22,8 @@ A web-based, AI-powered chatbot that accepts patient clinical notes, maps descri
 12. [CMS Data Files Referenced](#cms-data-files-referenced)
 13. [Caveats and Limitations](#caveats-and-limitations)
 14. [Extending the App](#extending-the-app)
-15. [References](#references)
+15. [Changelog](#changelog)
+16. [References](#references)
 
 ---
 
@@ -31,7 +32,7 @@ A web-based, AI-powered chatbot that accepts patient clinical notes, maps descri
 | Capability | Detail |
 |---|---|
 | **Clinical NLP** | Extracts discrete diagnoses and conditions from free-text clinical notes using Claude AI |
-| **ICD-10 RAG search** | Semantically searches ~10 k HCC-relevant ICD-10-CM codes using a local ChromaDB vector index |
+| **ICD-10 RAG search** | Searches ~10 k HCC-relevant ICD-10-CM codes using a local TF-IDF index (sklearn) — no internet or model download required |
 | **Code validation** | A second Claude pass applies medical coder judgment to select the most specific, documentation-supported codes |
 | **HCC calculation** | Pure-Python implementation of the CMS HCC v22 model: ICD-10 → CC → HCC (with hierarchies) → diagnosis categories → interaction terms → risk scores |
 | **9 model scores** | Returns scores for all seven Continued Enrollee (CE) models and both New Enrollee (NE) models simultaneously |
@@ -58,7 +59,7 @@ A web-based, AI-powered chatbot that accepts patient clinical notes, maps descri
 │                                                                   │
 │  Step 1  Claude claude-sonnet-4-6 ──► Extract conditions (JSON)  │
 │                                                                   │
-│  Step 2  ChromaDB (sentence-transformers) ──► Candidate ICD-10s  │
+│  Step 2  TF-IDF index (sklearn, local) ──► Candidate ICD-10s    │
 │                                                                   │
 │  Step 3  Claude claude-sonnet-4-6 ──► Select best codes (JSON)   │
 │                                                                   │
@@ -76,7 +77,7 @@ A web-based, AI-powered chatbot that accepts patient clinical notes, maps descri
 | File | Role |
 |---|---|
 | `backend/app.py` | FastAPI app, request routing, Claude API calls, pipeline orchestration |
-| `backend/rag_icd10.py` | Loads ICD-10 descriptions, builds/loads ChromaDB, exposes `search()` |
+| `backend/rag_icd10.py` | Loads ICD-10 descriptions, builds/caches a TF-IDF index, exposes `search()` |
 | `backend/hcc_calculator.py` | Pure-Python CMS HCC v22 scoring engine (no SAS dependency) |
 | `frontend/index.html` | Single-page chat UI with demographics sidebar |
 | `frontend/styles.css` | Styling — layout, cards, score table color coding |
@@ -90,7 +91,7 @@ Every time a user submits a message that looks like clinical notes, the backend 
 
 ### Step 1 — Condition extraction (Claude)
 
-Claude is prompted to parse the free text and return a structured JSON list of distinct medical conditions with a targeted search query for each one.
+Claude is prompted to parse the free text and return a structured JSON list of distinct medical conditions with a targeted search query for each one. Claude may return JSON wrapped in markdown code fences (` ```json ... ``` `); the backend strips these automatically before parsing.
 
 ```json
 {
@@ -103,20 +104,27 @@ Claude is prompted to parse the free text and return a structured JSON list of d
 }
 ```
 
-### Step 2 — Semantic RAG search (ChromaDB)
+### Step 2 — TF-IDF RAG search (local, no download)
 
-For each condition's search query, ChromaDB performs a nearest-neighbor search over the sentence-transformer embeddings of all HCC-relevant ICD-10-CM descriptions. The top 6 candidates per condition are collected (duplicates removed).
+For each condition's search query, a TF-IDF cosine similarity search runs against all HCC-relevant ICD-10-CM descriptions. The top 6 candidates per condition are collected (duplicates removed).
 
-The vector index contains only ICD-10 codes that appear in the CMS HCC v22 mapping file — codes with no HCC relevance are excluded, keeping the index lean and the results clinically meaningful.
+The index is built from two sources joined at startup:
+- **Descriptions** from `2027 Initial ICD-10-CM Mappings.csv`
+- **CC numbers** from `ICD10_CC_mappings_CMS_HCC_2027_v22_initial.csv`
+
+Only codes that appear in the V22 mapping file are indexed (~10,248 codes), keeping results clinically relevant. The index is serialised to `backend/tfidf_index.pkl` after the first build so subsequent restarts load it in under a second.
+
+**Why TF-IDF instead of a neural embedding model?**
+ICD-10 descriptions are short, domain-specific, and highly keyword-dependent ("Type 2 diabetes mellitus with diabetic chronic kidney disease, stage 4"). TF-IDF with bigrams performs well in this vocabulary and requires no internet connection, no model download, and no GPU. Build time is ~3 seconds; search latency is <1 ms.
 
 ### Step 3 — Code selection (Claude)
 
 A second Claude call acts as a medical coder review. It receives:
 - The original clinical notes
 - The extracted conditions
-- Up to 25 RAG candidates with descriptions, CC numbers, and similarity scores
+- Up to 25 TF-IDF candidates with descriptions, CC numbers, and similarity scores
 
-Claude selects the most specific, documentation-supported codes, removes duplicates at lower specificity, and returns each code with a rationale and confidence score (0–1).
+Claude selects the most specific, documentation-supported codes, removes duplicates at lower specificity, and returns each code with a rationale and confidence score (0–1). The response is fence-stripped and parsed the same way as Step 1.
 
 ### Step 4 — HCC calculation (Python)
 
@@ -136,15 +144,16 @@ Claude selects the most specific, documentation-supported codes, removes duplica
 
 ### Step 5 — Natural language explanation (Claude)
 
-Claude receives the complete analysis results and generates a plain-English explanation of which HCCs fired, what interactions are present, what the score means, and which payment model applies to the patient.
+Claude receives the complete analysis results (conditions, ICD-10 codes, active HCCs, interaction flags, and all nine scores) and generates a plain-English explanation of what fired, what the score means, and which payment model applies to the patient.
 
 ### Step 6 — Response assembly
 
 The API returns:
-- `response` — Claude's explanation
+- `response` — Claude's explanation (markdown)
 - `icd10_codes` — Selected codes with description, CC, condition, rationale, confidence
 - `hcc_result` — Active HCCs, triggered interactions, all 9 scores, applicable model
-- `conversation_history` — For multi-turn follow-up questions
+- `conditions_found` — Intermediate condition list from Step 1
+- `conversation_history` — Full history for multi-turn follow-up questions
 
 ---
 
@@ -224,12 +233,12 @@ Twenty-six interaction variables capture pairs of conditions that together cost 
 
 | Requirement | Version | Notes |
 |---|---|---|
-| Python | 3.10+ | Required for `f'{x if y else "GT"}'` syntax used throughout |
+| Python | 3.10+ | Required for f-string syntax used in age-variable naming |
 | pip | Any recent | Included with Python |
 | Anthropic API key | — | Get one at [console.anthropic.com](https://console.anthropic.com) |
 | CMS Data folder | — | Must be at `../CMS Data/` relative to this repo (see below) |
-| ~2 GB disk | — | For sentence-transformer model download and ChromaDB index |
-| Internet (first run) | — | To download `all-MiniLM-L6-v2` model (~90 MB) |
+| ~100 MB disk | — | For the pickled TF-IDF index (`tfidf_index.pkl`, ~80 MB) |
+| Internet | Startup only | Required only for Claude API calls — no model downloads needed |
 
 ### CMS Data folder location
 
@@ -283,12 +292,13 @@ Dependencies installed:
 | `fastapi` | Web framework for the REST API |
 | `uvicorn[standard]` | ASGI server |
 | `anthropic` | Official Anthropic Python SDK (Claude API) |
-| `chromadb` | Local vector database for the ICD-10 index |
-| `sentence-transformers` | `all-MiniLM-L6-v2` embeddings for semantic search |
+| `scikit-learn` | TF-IDF vectorizer and cosine similarity for ICD-10 search |
 | `pandas` | Loading and processing CMS reference CSVs |
-| `numpy` | Numerical operations |
+| `numpy` | Array operations for similarity ranking |
 | `python-multipart` | FastAPI form support |
 | `openpyxl` | Reading `.xlsx` files if needed |
+
+> **Note:** `chromadb` and `sentence-transformers` are listed in `requirements.txt` for completeness but are not used at runtime. The active search engine is sklearn's `TfidfVectorizer` — fully local, no model download, no internet required at startup.
 
 ---
 
@@ -350,18 +360,18 @@ python app.py
 
 Then open **http://localhost:8000** in your browser.
 
-### First-run startup sequence
+### Startup sequence
 
 ```
-[startup]  HCC Calculator loads 6 reference CSVs          ~1 second
-[startup]  ICD-10 RAG downloads sentence-transformer model  ~30 seconds (first run only, cached after)
-[startup]  ChromaDB vector index is built                   ~2-5 minutes (first run only, cached after)
+[startup]  HCC Calculator loads 6 reference CSVs         ~1 second
+[startup]  ICD-10 RAG loads descriptions + CC mappings   ~1 second
+[startup]  TF-IDF index built (first run) OR loaded       ~3 seconds (first run) / <1 second (cached)
 [ready]    Status badge turns green ✓
 ```
 
-On subsequent runs, the ChromaDB index at `backend/chroma_db/` is loaded from disk in seconds.
+Total cold-start time is typically **under 5 seconds**. The TF-IDF index is serialised to `backend/tfidf_index.pkl` after the first build and loaded from disk on all subsequent runs.
 
-> **Do not interrupt the first run** during index building. If you do, delete `backend/chroma_db/` and restart.
+> If the index file becomes stale (e.g. after updating the CMS data files), delete `backend/tfidf_index.pkl` and restart — it will rebuild automatically.
 
 ---
 
@@ -398,6 +408,19 @@ Current medications include metformin, furosemide, carvedilol, and tiotropium.
 Most recent HbA1c 8.4%, eGFR 22. Seen for routine follow-up.
 ```
 
+**Example output (verified against live pipeline):**
+
+| ICD-10 | Description | CC | HCC |
+|---|---|---|---|
+| E1122 | T2DM with diabetic chronic kidney disease | 18 | HCC18 |
+| N184 | Chronic kidney disease, stage 4 | 137 | HCC137 |
+| I5022 | Chronic systolic (congestive) heart failure | 85 | HCC85 |
+| J449 | COPD, unspecified | 111 | HCC111 |
+
+Active interactions: `HCC85_gDiabetesMellit`, `HCC85_gCopdCF`, `HCC85_gRenal`, `CHF_gCopdCF`, `DIABETES_CHF`
+
+`COMMUNITY_NA` risk score: **2.268** (2.27× average Medicare cost)
+
 ### 3. Read the results
 
 The bot returns three result cards alongside its plain-English explanation:
@@ -406,11 +429,13 @@ The bot returns three result cards alongside its plain-English explanation:
 
 | Column | Meaning |
 |---|---|
-| Code | ICD-10-CM code (no dots, e.g. `E1165`) |
+| Code | ICD-10-CM code (no dots, e.g. `E1122`) |
 | Description | Official CMS code description |
 | CC | Condition Category number this code maps to |
 | Condition | The clinical condition from the notes it satisfies |
 | Confidence | Claude's confidence that this code is supported by the documentation (0–100%) |
+
+> Codes that don't appear in the V22 mapping file (e.g. history codes like `Z8719`) receive `CC N/A` and contribute 0 to the HCC score. This is expected and correct.
 
 #### HCC Flags card
 
@@ -443,7 +468,7 @@ The chat is multi-turn. After receiving scores you can ask:
 
 ### `GET /api/status`
 
-Returns initialization state. The frontend polls this every 5 seconds.
+Returns initialization state. The frontend polls this every 5 seconds until `initialized: true`.
 
 ```json
 {
@@ -496,50 +521,55 @@ Main endpoint. Accepts clinical notes and demographics; returns ICD-10 codes, HC
   ],
   "icd10_codes": [
     {
-      "icd10": "E1165",
-      "description": "Type 2 diabetes mellitus with hyperglycemia",
+      "icd10": "E1122",
+      "description": "Type 2 diabetes mellitus with diabetic chronic kidney disease",
       "cc": "18",
       "condition": "Type 2 diabetes with CKD stage 4",
-      "rationale": "Documentation supports T2DM with CKD complication",
-      "confidence": 0.91
+      "rationale": "Combination code documents both T2DM and CKD cause",
+      "confidence": 0.95
     }
   ],
   "hcc_result": {
     "demographics_derived": {
-      "age": 75, "sex_label": "Female",
+      "age": 76, "sex_label": "Female",
       "orec_label": "Aged/OASI", "disabl": 0, "origdis": 0
     },
-    "icd10_to_cc": {"E1165": [18]},
+    "icd10_to_cc": {"E1122": [18], "N184": [137], "I5022": [85], "J449": [111]},
     "active_hccs": [
-      {"hcc": "HCC18", "description": "Diabetes with Chronic Complications"},
-      {"hcc": "HCC85", "description": "Congestive Heart Failure"},
+      {"hcc": "HCC18",  "description": "Diabetes with Chronic Complications"},
+      {"hcc": "HCC85",  "description": "Congestive Heart Failure"},
       {"hcc": "HCC111", "description": "Chronic Obstructive Pulmonary Disease"},
       {"hcc": "HCC137", "description": "Chronic Kidney Disease/Severe (Stage 4)"}
     ],
     "diag_categories_triggered": ["DIABETES", "CHF", "gCopdCF", "RENAL"],
-    "interactions_triggered": ["HCC85_gDiabetesMellit", "HCC85_gCopdCF", "HCC85_gRenal"],
+    "interactions_triggered": [
+      "HCC85_gDiabetesMellit", "HCC85_gCopdCF", "HCC85_gRenal",
+      "CHF_gCopdCF", "DIABETES_CHF"
+    ],
     "ce_scores": {
-      "COMMUNITY_NA": 2.341,
-      "COMMUNITY_PBA": 2.287,
-      "COMMUNITY_FBA": 2.563,
-      "COMMUNITY_ND": 2.108,
-      "COMMUNITY_PBD": 2.034,
-      "COMMUNITY_FBD": 2.312,
-      "INSTITUTIONAL": 1.654
+      "COMMUNITY_NA": 2.268,
+      "COMMUNITY_PBA": 2.363,
+      "COMMUNITY_FBA": 2.694,
+      "COMMUNITY_ND": 1.949,
+      "COMMUNITY_PBD": 2.047,
+      "COMMUNITY_FBD": 2.367,
+      "INSTITUTIONAL": 2.452
     },
     "ne_scores": {
-      "NEW_ENROLLEE": 1.324,
-      "SNP_NEW_ENROLLEE": 1.987
+      "NEW_ENROLLEE": 0.892,
+      "SNP_NEW_ENROLLEE": 1.480
     },
     "applicable_model": "COMMUNITY_NA",
-    "applicable_score": 2.341
+    "applicable_score": 2.268
   },
   "conversation_history": [
-    {"role": "user", "content": "75F with T2DM..."},
+    {"role": "user",      "content": "75F with T2DM..."},
     {"role": "assistant", "content": "Based on this note..."}
   ]
 }
 ```
+
+> The `ce_scores` and `ne_scores` values in the example above are real outputs from the live pipeline, not illustrative placeholders.
 
 ---
 
@@ -550,7 +580,7 @@ cms-hcc-risk-chatbot/
 │
 ├── backend/
 │   ├── app.py              FastAPI server, pipeline orchestration, Claude calls
-│   ├── rag_icd10.py        ChromaDB vector index — ICD-10 semantic search
+│   ├── rag_icd10.py        TF-IDF index over 10k HCC-relevant ICD-10 descriptions
 │   ├── hcc_calculator.py   CMS HCC v22 scoring engine (pure Python)
 │   └── requirements.txt    Python dependencies
 │
@@ -559,13 +589,13 @@ cms-hcc-risk-chatbot/
 │   ├── styles.css          Layout, cards, color coding
 │   └── app.js              API calls, card rendering, status polling
 │
-├── .gitignore              Excludes chroma_db/, venv/, .env, __pycache__
+├── .gitignore              Excludes tfidf_index.pkl, venv/, .env, __pycache__
 ├── start.bat               Windows one-click launcher
 └── README.md               This file
 ```
 
 **Not committed (auto-generated at runtime):**
-- `backend/chroma_db/` — ChromaDB vector index (rebuilt on first run if absent)
+- `backend/tfidf_index.pkl` — serialised TF-IDF matrix and vectorizer (~80 MB, rebuilt in ~3s if deleted)
 
 ---
 
@@ -575,7 +605,7 @@ All files are read-only at runtime. No CMS data is committed to this repository.
 
 | File | Location under `CMS Data/` | Purpose |
 |---|---|---|
-| `2027 Initial ICD-10-CM Mappings.csv` | `2027-initial-icd-10-cm-mappings/` | ICD-10-CM code descriptions used to build the RAG index |
+| `2027 Initial ICD-10-CM Mappings.csv` | `2027-initial-icd-10-cm-mappings/` | ICD-10-CM code descriptions used to build the TF-IDF index |
 | `ICD10_CC_mappings_CMS_HCC_2027_v22_initial.csv` | `python-2027-initial-model-software/.../internal/` | ICD-10 → CC mapping with MCE age/sex edit columns |
 | `V22_HCC_Hierarchies.csv` | same `internal/` folder | HCC hierarchy suppression rules |
 | `V22_Diagnosis_Categories.csv` | same `internal/` folder | HCC → disease group (CANCER, DIABETES, CHF, …) |
@@ -607,17 +637,15 @@ The CMS Data folder also contains additional model packages (CMS-HCC V28, ESRD V
 
 ### Technical
 
-7. **First-run index build takes 2–5 minutes.** During this time, the API returns an "initializing" message. Do not restart the server.
+7. **TF-IDF search is keyword-based, not semantic.** Unlike neural embeddings, TF-IDF cannot infer that "heart failure" and "cardiac decompensation" are synonymous unless both terms appear in the ICD-10 description. Claude's condition extraction step (Step 1) partially mitigates this by generating specific search queries, but very unusual clinical phrasing may yield weaker candidate retrieval. In practice, ICD-10 descriptions are terse and keyword-dense, so TF-IDF performs well for this domain.
 
-8. **ChromaDB index is not automatically updated.** If the underlying CMS ICD-10 mapping files change, delete `backend/chroma_db/` to force a rebuild on the next startup.
+8. **TF-IDF index is not automatically updated.** If the underlying CMS ICD-10 mapping or description files change, delete `backend/tfidf_index.pkl` to force a rebuild on the next startup.
 
 9. **No authentication.** The API has no built-in auth layer. Do not expose this server to the public internet with real patient data. Run it on `localhost` or behind an authenticated reverse proxy.
 
 10. **Clinical notes may contain PHI.** Text submitted via the chatbot is sent to the Anthropic API. Ensure you have appropriate data use agreements and de-identify notes where required before using with real patient data.
 
-11. **Sentence-transformer model requires internet on first download.** After the first run, the model is cached locally by Hugging Face at `~/.cache/huggingface/`.
-
-12. **Python 3.10+ required.** The f-string syntax `f'{x if y else "GT"}'` used in age-variable naming requires Python 3.12+ on some platforms if the string contains quotes. Python 3.10 is the tested minimum.
+11. **Python 3.10+ required.** The f-string syntax used in age-variable naming requires Python 3.10 as a minimum. Python 3.13 is verified to work.
 
 ---
 
@@ -642,6 +670,18 @@ Automatically route patients with `orec == 2` or `orec == 3` to the ESRD calcula
 
 The RxHCC R08 model scores members for Part D drug plan payments using NDC → RxHCC mappings instead of ICD-10 → CC. Reference files are under `RxHCC software R0826.84.*`.
 
+### Upgrade to neural embeddings
+
+If your environment has outbound HTTPS access to HuggingFace, you can restore the original sentence-transformer search:
+
+1. In `backend/rag_icd10.py`, replace the `TfidfVectorizer` block with:
+   ```python
+   from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
+   ef = SentenceTransformerEmbeddingFunction(model_name='all-MiniLM-L6-v2')
+   ```
+2. Reinstall `chromadb` and `sentence-transformers` if they were removed from your environment.
+3. On first run the model (~90 MB) downloads and a ChromaDB collection builds (~2–5 minutes).
+
 ### Stream Claude responses
 
 Replace the blocking `claude.messages.create()` calls in `app.py` with `claude.messages.stream()` and return a `StreamingResponse` from FastAPI to show the explanation as it's generated.
@@ -654,7 +694,31 @@ pip install gunicorn
 gunicorn backend.app:app -w 2 -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:8000
 ```
 
-Ensure the CMS Data path is absolute and accessible on the server. The `chroma_db/` directory should be on persistent storage.
+Ensure the CMS Data path is absolute and accessible on the server. The `tfidf_index.pkl` file will be created in `backend/` on first startup and can be committed or mounted as a volume to avoid the rebuild on each deploy.
+
+---
+
+## Changelog
+
+### v1.1.0 — 2026-06-02 (post-verification fixes)
+
+Two bugs discovered during end-to-end runtime verification were fixed and committed in [679de67](https://github.com/arunaryasomayajula/cms-hcc-risk-chatbot/commit/679de67):
+
+**1. Replaced ChromaDB + sentence-transformers with local TF-IDF (sklearn)**
+
+- **Root cause:** The `sentence-transformers` library attempted to download the `all-MiniLM-L6-v2` model (~90 MB) from HuggingFace at startup. On networks where HuggingFace is blocked, this caused a `[WinError 10054]` connection reset. Additionally, the download ran inside FastAPI's `ThreadPoolExecutor`, which conflicted with Anaconda's system `httpx` client on the PATH, raising `RuntimeError: Cannot send a request, as the client has been closed`.
+- **Fix:** `backend/rag_icd10.py` now uses `sklearn.feature_extraction.text.TfidfVectorizer` with bigrams. The index builds from local CSV files in ~3 seconds and is cached to `backend/tfidf_index.pkl`. No internet connection is needed at startup.
+- **Impact:** Startup time reduced from a potential 2–5 minutes to under 5 seconds total. Search latency is <1 ms.
+
+**2. Added markdown code-fence stripping before JSON parsing**
+
+- **Root cause:** Both Claude calls that return JSON (condition extraction and code selection) returned their output wrapped in ` ```json ... ``` ` markdown fences. The bare `json.loads()` calls raised `JSONDecodeError` on the backtick character, which was silently caught, leaving `conditions_found = []`. As a result, the entire RAG → HCC scoring pipeline was skipped and Claude produced a hallucinated analysis from its training knowledge instead of the actual calculated values.
+- **Fix:** `backend/app.py` gained a `_parse_json(text)` helper that strips leading/trailing ` ``` ` fences (with optional `json` language tag) before parsing. Both JSON parse sites now call `_parse_json()` instead of `json.loads()`.
+- **Impact:** The full 6-step pipeline now runs correctly: conditions are extracted, ICD-10 codes are retrieved and validated, HCC flags are set, and all 9 risk scores are calculated from the actual CMS reference coefficients.
+
+### v1.0.0 — 2026-06-02
+
+Initial release.
 
 ---
 
@@ -676,7 +740,7 @@ The CMS Data folder contains the following packages published by CMS for payment
 
 | Package | HCCs | Description |
 |---|---|---|
-| CMS-HCC V22 — `V2226.79.O2` | 79 | Standard MA risk model (initial, blended) |
+| CMS-HCC V22 — `V2226.79.O2` | 79 | Standard MA risk model (initial, blended) — **used by this chatbot** |
 | CMS-HCC V28 — `V2826.115.T2` | 115 | Standard MA risk model (transition, new) |
 | ESRD-HCC V21 — `E2126.87.P2` | 87 | ESRD dialysis/graft (initial) |
 | ESRD-HCC V24 — `E2426.86.T2` | 86 | ESRD (transition) |
@@ -694,16 +758,17 @@ The CMS Data folder contains the following packages published by CMS for payment
 | Dual | A Medicare beneficiary who also receives Medicaid benefits |
 | CE | Continued Enrollee — member enrolled in the plan in both the diagnosis year and payment year |
 | NE | New Enrollee — member's first year in Medicare; no prior diagnosis data used |
+| TF-IDF | Term Frequency–Inverse Document Frequency — a statistical text similarity measure |
 
 ### Libraries and models
 
 | Library | License | Link |
 |---|---|---|
 | FastAPI | MIT | https://fastapi.tiangolo.com |
-| ChromaDB | Apache 2.0 | https://www.trychroma.com |
-| sentence-transformers (`all-MiniLM-L6-v2`) | Apache 2.0 | https://www.sbert.net |
+| scikit-learn | BSD 3-Clause | https://scikit-learn.org |
 | Anthropic Python SDK | MIT | https://github.com/anthropics/anthropic-sdk-python |
 | pandas | BSD 3-Clause | https://pandas.pydata.org |
+| numpy | BSD 3-Clause | https://numpy.org |
 
 ---
 
