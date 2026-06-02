@@ -1,6 +1,7 @@
 import os
 import sys
 import json
+import re
 import logging
 import asyncio
 from contextlib import asynccontextmanager
@@ -16,6 +17,16 @@ import anthropic
 
 from rag_icd10 import ICD10RAG
 from hcc_calculator import HCCCalculator
+
+
+def _parse_json(text: str) -> dict:
+    """Parse JSON that may be wrapped in ```json ... ``` markdown fences."""
+    text = text.strip()
+    # Strip markdown code fences if present
+    fence = re.match(r'^```(?:json)?\s*([\s\S]*?)```\s*$', text, re.IGNORECASE)
+    if fence:
+        text = fence.group(1).strip()
+    return json.loads(text)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -167,8 +178,9 @@ async def chat(req: ChatRequest):
             messages=[{"role": "user", "content": user_text}],
         )
         try:
-            conditions_found = json.loads(extract_resp.content[0].text).get("conditions", [])
-        except (json.JSONDecodeError, IndexError, AttributeError):
+            conditions_found = _parse_json(extract_resp.content[0].text).get("conditions", [])
+        except (json.JSONDecodeError, IndexError, AttributeError, ValueError) as e:
+            logger.warning(f"Condition extraction parse failed: {e}")
             conditions_found = []
 
         # ── Step 3: RAG search per condition ─────────────────────────────────
@@ -206,8 +218,9 @@ async def chat(req: ChatRequest):
                 }],
             )
             try:
-                icd10_results = json.loads(select_resp.content[0].text).get("selected_codes", [])
-            except (json.JSONDecodeError, IndexError, AttributeError):
+                icd10_results = _parse_json(select_resp.content[0].text).get("selected_codes", [])
+            except (json.JSONDecodeError, IndexError, AttributeError, ValueError) as e:
+                logger.warning(f"Code selection parse failed: {e}")
                 icd10_results = candidates[:5]
 
         # ── Step 5: HCC calculation ───────────────────────────────────────────

@@ -1,5 +1,13 @@
+"""
+ICD-10 RAG using TF-IDF + cosine similarity.
+
+Replaces ChromaDB + sentence-transformers with a fully local sklearn-based
+index — no internet download required. Builds in ~3 seconds, searches in <1ms.
+"""
 import os
+import pickle
 import logging
+import numpy as np
 import pandas as pd
 from typing import List, Dict
 
@@ -23,7 +31,8 @@ V22_MAPPING_CSV = os.path.join(
     'ICD10_CC_mappings_CMS_HCC_2027_v22_initial.csv'
 )
 
-CHROMA_DB_PATH = os.path.join(os.path.dirname(__file__), 'chroma_db')
+# Local cache for the TF-IDF index (avoids rebuilding on every restart)
+INDEX_CACHE = os.path.join(os.path.dirname(__file__), 'tfidf_index.pkl')
 
 
 def _norm(code: str) -> str:
@@ -32,8 +41,9 @@ def _norm(code: str) -> str:
 
 class ICD10RAG:
     def __init__(self):
-        self._client = None
-        self._collection = None
+        self._vectorizer = None   # TfidfVectorizer
+        self._matrix = None       # sparse TF-IDF matrix (n_docs × n_features)
+        self._records: List[Dict] = []          # ordered list of ICD-10 dicts
         self._icd10_lookup: Dict[str, Dict] = {}
         self._ready = False
 
@@ -44,16 +54,16 @@ class ICD10RAG:
     def initialize(self):
         logger.info("Loading ICD-10 data...")
         self._load_data()
-        logger.info("Building/loading ChromaDB vector index...")
-        self._setup_chroma()
+        logger.info("Building TF-IDF index...")
+        self._build_index()
         self._ready = True
-        logger.info(f"ICD-10 RAG ready — {len(self._icd10_lookup)} codes indexed")
+        logger.info(f"ICD-10 RAG ready — {len(self._records)} codes indexed")
+
+    # ── Data loading ──────────────────────────────────────────────────────────
 
     def _load_data(self):
-        # Load description CSV (3 comment rows before actual header)
         desc_df = pd.read_csv(ICD10_DESC_CSV, skiprows=3, header=0,
                               low_memory=False, dtype=str)
-        # First col = code, second = description (column names may contain newlines)
         desc_df = desc_df.rename(columns={
             desc_df.columns[0]: 'ICD10',
             desc_df.columns[1]: 'Description'
@@ -62,80 +72,79 @@ class ICD10RAG:
         desc_df['ICD10_norm'] = desc_df['ICD10'].apply(_norm)
         desc_df = desc_df[desc_df['ICD10_norm'].str.len() >= 3]
 
-        # Load V22 CC mapping (only HCC-relevant codes)
         v22_df = pd.read_csv(V22_MAPPING_CSV, low_memory=False, dtype={'ICD10': str})
         v22_df['ICD10_norm'] = v22_df['ICD10'].apply(_norm)
         v22_df['CC_str'] = v22_df['CC'].apply(
             lambda x: str(int(float(x))) if pd.notna(x) else ''
         )
 
-        # Keep only codes that have an HCC mapping
         merged = desc_df.merge(
             v22_df[['ICD10_norm', 'CC_str']].drop_duplicates('ICD10_norm'),
             on='ICD10_norm', how='inner'
         )
 
-        self._icd10_lookup = {
-            row['ICD10_norm']: {
+        self._records = [
+            {
                 'icd10': row['ICD10_norm'],
                 'description': str(row['Description']),
                 'cc': row['CC_str'],
             }
             for _, row in merged.iterrows()
-        }
-        logger.info(f"Loaded {len(self._icd10_lookup)} HCC-relevant ICD-10 codes")
+        ]
+        self._icd10_lookup = {r['icd10']: r for r in self._records}
+        logger.info(f"Loaded {len(self._records)} HCC-relevant ICD-10 codes")
 
-    def _setup_chroma(self):
-        import chromadb
-        from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
+    # ── TF-IDF index ─────────────────────────────────────────────────────────
 
-        ef = SentenceTransformerEmbeddingFunction(model_name='all-MiniLM-L6-v2')
-        self._client = chromadb.PersistentClient(path=CHROMA_DB_PATH)
-        name = 'icd10_v22_2027_v1'
+    def _build_index(self):
+        """Build or load a pickled TF-IDF index. Rebuilds if data changes."""
+        if os.path.exists(INDEX_CACHE):
+            try:
+                with open(INDEX_CACHE, 'rb') as f:
+                    cached = pickle.load(f)
+                if cached.get('n_docs') == len(self._records):
+                    self._vectorizer = cached['vectorizer']
+                    self._matrix = cached['matrix']
+                    logger.info(f"Loaded TF-IDF index from cache ({len(self._records)} docs)")
+                    return
+            except Exception:
+                pass
 
-        # Try loading existing collection
-        try:
-            col = self._client.get_collection(name=name, embedding_function=ef)
-            if col.count() >= len(self._icd10_lookup) * 0.9:
-                self._collection = col
-                logger.info(f"Loaded existing index ({col.count()} documents)")
-                return
-            self._client.delete_collection(name)
-        except Exception:
-            pass
+        from sklearn.feature_extraction.text import TfidfVectorizer
+        logger.info("Fitting TF-IDF vectorizer (first run, ~3 seconds)...")
+        docs = [r['description'] for r in self._records]
+        self._vectorizer = TfidfVectorizer(
+            analyzer='word',
+            ngram_range=(1, 2),
+            min_df=1,
+            sublinear_tf=True,
+        )
+        self._matrix = self._vectorizer.fit_transform(docs)
 
-        # Build new collection
-        logger.info("Building new ChromaDB index — this takes ~2-5 min on first run...")
-        self._collection = self._client.create_collection(name=name, embedding_function=ef)
+        with open(INDEX_CACHE, 'wb') as f:
+            pickle.dump({
+                'n_docs': len(self._records),
+                'vectorizer': self._vectorizer,
+                'matrix': self._matrix,
+            }, f)
+        logger.info("TF-IDF index built and cached")
 
-        items = list(self._icd10_lookup.values())
-        batch = 500
-        for i in range(0, len(items), batch):
-            chunk = items[i:i + batch]
-            self._collection.add(
-                ids=[it['icd10'] for it in chunk],
-                documents=[it['description'] for it in chunk],
-                metadatas=chunk,
-            )
-            if i % 5000 == 0 and i > 0:
-                logger.info(f"  Indexed {i}/{len(items)}...")
-        logger.info("ChromaDB index built")
+    # ── Search ────────────────────────────────────────────────────────────────
 
     def search(self, query: str, n_results: int = 10) -> List[Dict]:
-        if not self._ready or not self._collection:
+        if not self._ready or self._matrix is None:
             return []
-        n = min(n_results, self._collection.count())
-        results = self._collection.query(query_texts=[query], n_results=n)
-        hits = []
-        for meta, dist in zip(results['metadatas'][0], results['distances'][0]):
-            hits.append({
-                'icd10': meta.get('icd10', ''),
-                'description': meta.get('description', ''),
-                'cc': meta.get('cc', ''),
-                'similarity': round(max(0.0, 1.0 - dist), 3),
-            })
-        return hits
+
+        from sklearn.metrics.pairwise import cosine_similarity
+        q_vec = self._vectorizer.transform([query])
+        sims = cosine_similarity(q_vec, self._matrix).flatten()
+        top_idx = np.argsort(sims)[::-1][:n_results]
+
+        return [
+            {**self._records[i], 'similarity': round(float(sims[i]), 3)}
+            for i in top_idx
+            if sims[i] > 0
+        ]
 
     def get_by_code(self, code: str) -> Dict:
-        """Direct lookup by ICD-10 code."""
         return self._icd10_lookup.get(_norm(code), {})
