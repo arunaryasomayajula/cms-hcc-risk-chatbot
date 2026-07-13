@@ -55,6 +55,22 @@
           New Enrollee Medicaid
         </label>
 
+        <div class="section-divider">AI Models <span class="section-sub">per pipeline step</span></div>
+
+        <label class="field-label">Condition Extraction
+          <select id="extractProvider" class="provider-select"></select>
+        </label>
+
+        <label class="field-label">ICD-10 Code Selection
+          <select id="selectProvider" class="provider-select"></select>
+        </label>
+
+        <label class="field-label">Explanation
+          <select id="explainProvider" class="provider-select"></select>
+        </label>
+
+        <div id="providerNote" class="sidebar-note">Loading model config…</div>
+
         <div class="sidebar-note">
           Age is calculated as of <strong>Feb 1, 2027</strong> (CMS payment-year cutoff).
         </div>

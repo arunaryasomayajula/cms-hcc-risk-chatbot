@@ -12,18 +12,21 @@ A web-based, AI-powered chatbot that accepts patient clinical notes, maps descri
 2. [Architecture](#architecture)
 3. [How the Pipeline Works](#how-the-pipeline-works)
 4. [CMS HCC Model Primer](#cms-hcc-model-primer)
-5. [Prerequisites](#prerequisites)
-6. [Installation](#installation)
-7. [Configuration](#configuration)
-8. [Running the App](#running-the-app)
-9. [Using the Chatbot](#using-the-chatbot)
-10. [API Reference](#api-reference)
-11. [Project Structure](#project-structure)
-12. [CMS Data Files Referenced](#cms-data-files-referenced)
-13. [Caveats and Limitations](#caveats-and-limitations)
-14. [Extending the App](#extending-the-app)
-15. [Changelog](#changelog)
-16. [References](#references)
+5. [Model Providers (Claude / MedGemma via vLLM)](#model-providers-claude--medgemma-via-vllm)
+6. [PHI Guardrails](#phi-guardrails)
+7. [Evaluation](#evaluation)
+8. [Prerequisites](#prerequisites)
+9. [Installation](#installation)
+10. [Configuration](#configuration)
+11. [Running the App](#running-the-app)
+12. [Using the Chatbot](#using-the-chatbot)
+13. [API Reference](#api-reference)
+14. [Project Structure](#project-structure)
+15. [CMS Data Files Referenced](#cms-data-files-referenced)
+16. [Caveats and Limitations](#caveats-and-limitations)
+17. [Extending the App](#extending-the-app)
+18. [Changelog](#changelog)
+19. [References](#references)
 
 ---
 
@@ -31,9 +34,11 @@ A web-based, AI-powered chatbot that accepts patient clinical notes, maps descri
 
 | Capability | Detail |
 |---|---|
-| **Clinical NLP** | Extracts discrete diagnoses and conditions from free-text clinical notes using Claude AI |
+| **Clinical NLP** | Extracts discrete diagnoses and conditions from free-text clinical notes using an LLM (Claude or self-hosted MedGemma) |
+| **PHI guardrail** | De-identifies names, dates, MRNs, SSNs, etc. (LLM Guard) before any text reaches an LLM |
+| **Pluggable models** | Each pipeline step is independently served by Claude or MedGemma (via vLLM / any OpenAI-compatible endpoint) |
 | **ICD-10 RAG search** | Searches ~10 k HCC-relevant ICD-10-CM codes using a local TF-IDF index (sklearn) — no internet or model download required |
-| **Code validation** | A second Claude pass applies medical coder judgment to select the most specific, documentation-supported codes |
+| **Code validation** | A second LLM pass applies medical coder judgment to select the most specific, documentation-supported codes |
 | **HCC calculation** | Pure-Python implementation of the CMS HCC v22 model: ICD-10 → CC → HCC (with hierarchies) → diagnosis categories → interaction terms → risk scores |
 | **9 model scores** | Returns scores for all seven Continued Enrollee (CE) models and both New Enrollee (NE) models simultaneously |
 | **Conversational UI** | Multi-turn chat with persistent demographics sidebar, inline result cards, and confidence bars |
@@ -57,19 +62,22 @@ A web-based, AI-powered chatbot that accepts patient clinical notes, maps descri
 ┌─────────────────────────────────────────────────────────────────┐
 │                      FastAPI backend (Python)                     │
 │                                                                   │
-│  Step 1  Claude claude-sonnet-4-6 ──► Extract conditions (JSON)  │
+│  Guard   LLM Guard ──► de-identify PHI in the note (Anonymize)   │
+│                                                                   │
+│  Step 1  LLM (Claude | MedGemma) ──► Extract conditions (JSON)   │
 │                                                                   │
 │  Step 2  TF-IDF index (sklearn, local) ──► Candidate ICD-10s    │
 │                                                                   │
-│  Step 3  Claude claude-sonnet-4-6 ──► Select best codes (JSON)   │
+│  Step 3  LLM (Claude | MedGemma) ──► Select best codes (JSON)    │
 │                                                                   │
 │  Step 4  HCCCalculator ──► 9 risk scores                         │
 │                                                                   │
-│  Step 5  Claude claude-sonnet-4-6 ──► Natural language summary   │
+│  Step 5  LLM (Claude | MedGemma) ──► Natural language summary    │
+│          (provider is configurable per step)                     │
 └──────────────────────────────┬──────────────────────────────────┘
                                 │ reads reference CSVs (read-only)
                                 ▼
-                  CMS Data folder (local, not modified)
+                  data/ folder (bundled CMS reference CSVs)
 ```
 
 ### Component Responsibilities
@@ -87,11 +95,13 @@ A web-based, AI-powered chatbot that accepts patient clinical notes, maps descri
 
 ## How the Pipeline Works
 
-Every time a user submits a message that looks like clinical notes, the backend executes six sequential steps:
+Every time a user submits a message that looks like clinical notes, the backend executes six sequential steps.
 
-### Step 1 — Condition extraction (Claude)
+> **Note:** The note is first **de-identified** (see [PHI Guardrails](#phi-guardrails)), and the three LLM steps (1, 3, 5) each run on the **configured provider — Claude or MedGemma** (see [Model Providers](#model-providers-claude--medgemma-via-vllm)). "Claude" below refers to the default provider; the flow is identical for MedGemma.
 
-Claude is prompted to parse the free text and return a structured JSON list of distinct medical conditions with a targeted search query for each one. Claude may return JSON wrapped in markdown code fences (` ```json ... ``` `); the backend strips these automatically before parsing.
+### Step 1 — Condition extraction (LLM: Claude or MedGemma)
+
+The LLM is prompted to parse the free text and return a structured JSON list of distinct medical conditions with a targeted search query for each one. Claude may return JSON wrapped in markdown code fences (` ```json ... ``` `); the backend strips these automatically before parsing.
 
 ```json
 {
@@ -117,9 +127,9 @@ Only codes that appear in the V22 mapping file are indexed (~10,248 codes), keep
 **Why TF-IDF instead of a neural embedding model?**
 ICD-10 descriptions are short, domain-specific, and highly keyword-dependent ("Type 2 diabetes mellitus with diabetic chronic kidney disease, stage 4"). TF-IDF with bigrams performs well in this vocabulary and requires no internet connection, no model download, and no GPU. Build time is ~3 seconds; search latency is <1 ms.
 
-### Step 3 — Code selection (Claude)
+### Step 3 — Code selection (LLM: Claude or MedGemma)
 
-A second Claude call acts as a medical coder review. It receives:
+A second LLM call acts as a medical coder review. It receives:
 - The original clinical notes
 - The extracted conditions
 - Up to 25 TF-IDF candidates with descriptions, CC numbers, and similarity scores
@@ -142,7 +152,7 @@ Claude selects the most specific, documentation-supported codes, removes duplica
 
 6. **Score = Σ(flag × coefficient)** — Every active flag is multiplied by its model-specific regression coefficient from `V22_CE_Relative_Factors.csv` or `V22_NE_Relative_Factors.csv`. The dot product is the risk score for that model.
 
-### Step 5 — Natural language explanation (Claude)
+### Step 5 — Natural language explanation (LLM: Claude or MedGemma)
 
 Claude receives the complete analysis results (conditions, ICD-10 codes, active HCCs, interaction flags, and all nine scores) and generates a plain-English explanation of what fired, what the score means, and which payment model applies to the patient.
 
@@ -229,41 +239,124 @@ Twenty-six interaction variables capture pairs of conditions that together cost 
 
 ---
 
+## Model Providers (Claude / MedGemma via vLLM)
+
+The three LLM steps — condition extraction, ICD-10 code selection, and the
+natural-language explanation — can each be served by a **different** model:
+
+- **Claude** (default) via the Anthropic API.
+- **MedGemma** (`google/medgemma-27b-it` / `-4b-it`) served locally by **vLLM**
+  through its OpenAI-compatible API.
+
+Selection is **per pipeline step**, set either from the sidebar dropdowns
+(populated from `GET /api/config`) or via environment defaults:
+
+| Variable | Default | Values |
+|---|---|---|
+| `LLM_PROVIDER_EXTRACT` | `claude` | `claude` \| `medgemma` |
+| `LLM_PROVIDER_SELECT`  | `claude` | `claude` \| `medgemma` |
+| `LLM_PROVIDER_EXPLAIN` | `claude` | `claude` \| `medgemma` |
+| `CLAUDE_MODEL` | `claude-sonnet-4-6` | Anthropic model id |
+| `VLLM_BASE_URL` | `http://localhost:8001/v1` | vLLM OpenAI endpoint |
+| `VLLM_MODEL` | `google/medgemma-27b-it` | model served by vLLM |
+| `VLLM_API_KEY` | `EMPTY` | matches vLLM's `--api-key` |
+
+The abstraction lives in [`backend/llm_providers.py`](backend/llm_providers.py); any
+OpenAI-compatible server works by pointing `VLLM_BASE_URL`/`VLLM_MODEL` at it. See
+[`docs/vllm-medgemma.md`](docs/vllm-medgemma.md) for the full serving guide. Each
+`/api/chat` response includes `providers_used` so you can confirm which model served
+each step.
+
+---
+
+## PHI Guardrails
+
+Before any clinical note is sent to an LLM (Claude **or** MedGemma), it is scanned
+by **LLM Guard**'s `Anonymize` scanner. Detected PHI/PII — names, dates, phone
+numbers, emails, SSNs, medical-record numbers, locations — is **de-identified**
+(replaced with placeholders like `[REDACTED_PERSON_1]`) and the pipeline proceeds on
+the sanitized text. See [`backend/guardrails.py`](backend/guardrails.py).
+
+- **De-identify, don't block** — clinical content (diagnoses, labs, meds) is kept.
+- **No re-identification** — the placeholder→value map (Vault) never leaves the
+  process and is discarded after each request, so PHI never enters the model output
+  or stored conversation history.
+- **Only types are surfaced** — the `/api/chat` response returns a `guardrail` block
+  with entity *types* and counts (never raw values); the UI shows a "🔒 PHI
+  de-identified" banner.
+- **Graceful fallback** — if `llm-guard` or its spaCy model isn't installed, the app
+  still boots and `/api/status` reports the guardrail as off.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `GUARDRAILS_ENABLED` | `true` | set `false` to disable de-identification |
+
+> After installing `llm-guard`, download the spaCy model it relies on:
+> `python -m spacy download en_core_web_lg`
+>
+> **Platform note:** `llm-guard` pulls native packages (`spacy`, `thinc`, `blis`,
+> `sentencepiece`). On Linux/macOS these install from wheels cleanly. On **Windows +
+> Python 3.13** some versions have no prebuilt wheel and need a C++ toolchain; if pip
+> tries to compile, force wheels with
+> `pip install llm-guard "spacy>=3.8" --only-binary=:all:`, or use a Python 3.11/3.12
+> environment. The guardrail code in `backend/guardrails.py` is compatible with both
+> the modern (0.3.x) and legacy (0.0.x) `llm-guard` scan APIs.
+
+---
+
+## Evaluation
+
+A standalone harness in [`evaluation/`](evaluation/) (separate `requirements.txt`)
+covers four strategies:
+
+| Script | Measures |
+|---|---|
+| `run_rag_eval.py` | ICD-10 retrieval `recall@k` / `MRR` vs a gold set (no API key) |
+| `run_provider_comparison.py` | Claude vs MedGemma: code F1, HCC set, score, latency |
+| `run_guardrail_eval.py` | PHI detection precision/recall + clinical-term survival |
+| `run_h2o_sonar_eval.py` | H2O sonar PII-leakage / toxicity / fairness evaluators |
+
+See [`evaluation/README.md`](evaluation/README.md) for usage and interpretation.
+
+---
+
 ## Prerequisites
 
 | Requirement | Version | Notes |
 |---|---|---|
 | Python | 3.10+ | Required for f-string syntax used in age-variable naming |
 | pip | Any recent | Included with Python |
-| Anthropic API key | — | Get one at [console.anthropic.com](https://console.anthropic.com) |
-| CMS Data folder | — | Must be at `../CMS Data/` relative to this repo (see below) |
+| Anthropic API key | — | Only if you use the Claude provider (default). Get one at [console.anthropic.com](https://console.anthropic.com) |
+| CMS reference data | — | **Bundled in this repo** under `data/` (~1.5 MB) — nothing to download |
 | ~100 MB disk | — | For the pickled TF-IDF index (`tfidf_index.pkl`, ~80 MB) |
 | Internet | Startup only | Required only for Claude API calls — no model downloads needed |
 
-### CMS Data folder location
+### CMS reference data (bundled)
 
-The backend expects the CMS reference files at the path **one level above this repository**:
+The seven CMS reference files the app needs are **committed to this repository** under
+`data/`, so the project is self-contained and runs out of the box:
 
 ```
-Downloads/
-├── CMS Data/                         ← CMS reference files (not in this repo)
-│   ├── 2027-initial-icd-10-cm-mappings/
-│   │   └── 2027 Initial ICD-10-CM Mappings.csv
-│   └── python-2027-initial-model-software/
-│       └── CMS_HCC_v22_2027_O1_initial_package_v1/
-│           └── software/CMS_HCC_v22/data/input/internal/
-│               ├── ICD10_CC_mappings_CMS_HCC_2027_v22_initial.csv
-│               ├── V22_HCC_Hierarchies.csv
-│               ├── V22_Diagnosis_Categories.csv
-│               ├── V22_Interactions.csv
-│               ├── V22_CE_Relative_Factors.csv
-│               └── V22_NE_Relative_Factors.csv
-└── cms-hcc-risk-chatbot/             ← this repository
-    ├── backend/
-    └── frontend/
+cms-hcc-chatbot/
+└── data/                                      ← CMS reference files (public domain)
+    ├── icd10_mappings/
+    │   └── 2027 Initial ICD-10-CM Mappings.csv     ← ICD-10 descriptions
+    └── v22_internal/
+        ├── ICD10_CC_mappings_CMS_HCC_2027_v22_initial.csv
+        ├── V22_HCC_Hierarchies.csv
+        ├── V22_Diagnosis_Categories.csv
+        ├── V22_Interactions.csv
+        ├── V22_CE_Relative_Factors.csv
+        └── V22_NE_Relative_Factors.csv
 ```
 
-If your `CMS Data` folder is in a different location, edit the `CMS_DATA_PATH` constant at the top of both `backend/hcc_calculator.py` and `backend/rag_icd10.py`.
+To use an external copy instead (same `icd10_mappings/` + `v22_internal/` layout), set
+the `CMS_DATA_PATH` environment variable; both `backend/hcc_calculator.py` and
+`backend/rag_icd10.py` honor it and fall back to the bundled `data/` folder otherwise.
+
+> These files are a small subset of the full CMS release (the V22 payment-year-2027
+> initial package). The complete CMS Data collection — V28, ESRD, RxHCC, FFS
+> normalization files — is not needed by this V22 chatbot and is not committed.
 
 ---
 
@@ -292,6 +385,8 @@ Dependencies installed:
 | `fastapi` | Web framework for the REST API |
 | `uvicorn[standard]` | ASGI server |
 | `anthropic` | Official Anthropic Python SDK (Claude API) |
+| `openai` | Client for MedGemma served via vLLM's OpenAI-compatible API |
+| `llm-guard` | PHI/PII de-identification (Anonymize scanner + Vault) |
 | `scikit-learn` | TF-IDF vectorizer and cosine similarity for ICD-10 search |
 | `pandas` | Loading and processing CMS reference CSVs |
 | `numpy` | Array operations for similarity ranking |
@@ -323,20 +418,21 @@ $env:ANTHROPIC_API_KEY = "sk-ant-api03-..."
 export ANTHROPIC_API_KEY="sk-ant-api03-..."
 ```
 
-> The key is read by `backend/app.py` via `os.environ.get('ANTHROPIC_API_KEY')`. It is never logged or committed.
+> The key is read by `backend/llm_providers.py` via `os.environ.get('ANTHROPIC_API_KEY')`. It is never logged or committed. Not required if every pipeline step is set to MedGemma.
 
-### Optional — CMS Data path override
+### Optional — CMS data path override
 
-If your CMS data is not at `../CMS Data/` relative to the repo, edit the two path constants:
+The CMS reference files are bundled under `data/` and used automatically. To point at
+an external copy (same `icd10_mappings/` + `v22_internal/` layout), set one env var:
 
-**`backend/hcc_calculator.py` line 11:**
-```python
-CMS_DATA_PATH = os.path.abspath('/your/path/to/CMS Data')
+**Windows (PowerShell):**
+```powershell
+$env:CMS_DATA_PATH = "C:\path\to\your\data"
 ```
 
-**`backend/rag_icd10.py` line 9:**
-```python
-CMS_DATA_PATH = os.path.abspath('/your/path/to/CMS Data')
+**macOS / Linux:**
+```bash
+export CMS_DATA_PATH="/path/to/your/data"
 ```
 
 ---
@@ -576,44 +672,61 @@ Main endpoint. Accepts clinical notes and demographics; returns ICD-10 codes, HC
 ## Project Structure
 
 ```
-cms-hcc-risk-chatbot/
+cms-hcc-chatbot/
 │
 ├── backend/
-│   ├── app.py              FastAPI server, pipeline orchestration, Claude calls
+│   ├── app.py              FastAPI server, pipeline orchestration, per-step LLM calls
+│   ├── llm_providers.py    Claude + MedGemma/vLLM provider abstraction
+│   ├── guardrails.py       LLM Guard PHI de-identification
 │   ├── rag_icd10.py        TF-IDF index over 10k HCC-relevant ICD-10 descriptions
 │   ├── hcc_calculator.py   CMS HCC v22 scoring engine (pure Python)
 │   └── requirements.txt    Python dependencies
 │
 ├── frontend/
-│   ├── index.html          Single-page chat UI
+│   ├── index.html          Single-page chat UI (with per-step model selectors)
 │   ├── styles.css          Layout, cards, color coding
 │   └── app.js              API calls, card rendering, status polling
 │
-├── .gitignore              Excludes tfidf_index.pkl, venv/, .env, __pycache__
+├── data/                   Bundled CMS reference files (public domain, ~1.5 MB)
+│   ├── icd10_mappings/     2027 Initial ICD-10-CM Mappings.csv
+│   └── v22_internal/       6 CMS-HCC V22 CSVs (mappings, hierarchies, factors, …)
+│
+├── evaluation/            Offline eval harness (RAG, provider comparison, guardrail, H2O sonar)
+│   ├── datasets/           Gold clinical + PHI cases
+│   └── run_*.py            Eval scripts
+│
+├── docs/
+│   └── vllm-medgemma.md    MedGemma-on-vLLM serving guide
+│
+├── .gitignore              Excludes tfidf_index.pkl, evaluation/results/, venv/, .env
 ├── start.bat               Windows one-click launcher
 └── README.md               This file
 ```
 
 **Not committed (auto-generated at runtime):**
 - `backend/tfidf_index.pkl` — serialised TF-IDF matrix and vectorizer (~80 MB, rebuilt in ~3s if deleted)
+- `evaluation/results/` — eval output artifacts
 
 ---
 
 ## CMS Data Files Referenced
 
-All files are read-only at runtime. No CMS data is committed to this repository.
+All files are read-only at runtime and **bundled under `data/`** (CMS reference data
+is public domain). The full CMS release is not committed — only the seven files below.
 
-| File | Location under `CMS Data/` | Purpose |
+| File | Location under `data/` | Purpose |
 |---|---|---|
-| `2027 Initial ICD-10-CM Mappings.csv` | `2027-initial-icd-10-cm-mappings/` | ICD-10-CM code descriptions used to build the TF-IDF index |
-| `ICD10_CC_mappings_CMS_HCC_2027_v22_initial.csv` | `python-2027-initial-model-software/.../internal/` | ICD-10 → CC mapping with MCE age/sex edit columns |
-| `V22_HCC_Hierarchies.csv` | same `internal/` folder | HCC hierarchy suppression rules |
-| `V22_Diagnosis_Categories.csv` | same `internal/` folder | HCC → disease group (CANCER, DIABETES, CHF, …) |
-| `V22_Interactions.csv` | same `internal/` folder | 26 comorbidity interaction variable definitions |
-| `V22_CE_Relative_Factors.csv` | same `internal/` folder | Regression coefficients — 7 CE models |
-| `V22_NE_Relative_Factors.csv` | same `internal/` folder | Regression coefficients — 2 NE models |
+| `2027 Initial ICD-10-CM Mappings.csv` | `icd10_mappings/` | ICD-10-CM code descriptions used to build the TF-IDF index |
+| `ICD10_CC_mappings_CMS_HCC_2027_v22_initial.csv` | `v22_internal/` | ICD-10 → CC mapping with MCE age/sex edit columns |
+| `V22_HCC_Hierarchies.csv` | `v22_internal/` | HCC hierarchy suppression rules |
+| `V22_Diagnosis_Categories.csv` | `v22_internal/` | HCC → disease group (CANCER, DIABETES, CHF, …) |
+| `V22_Interactions.csv` | `v22_internal/` | 26 comorbidity interaction variable definitions |
+| `V22_CE_Relative_Factors.csv` | `v22_internal/` | Regression coefficients — 7 CE models |
+| `V22_NE_Relative_Factors.csv` | `v22_internal/` | Regression coefficients — 2 NE models |
 
-The CMS Data folder also contains additional model packages (CMS-HCC V28, ESRD V21/V24, RxHCC R08) which are not used by this chatbot but are present in the reference files. See [Extending the App](#extending-the-app) for guidance on incorporating those models.
+Additional CMS model packages (CMS-HCC V28, ESRD V21/V24, RxHCC R08) are not used by
+this V22 chatbot and are not bundled. See [Extending the App](#extending-the-app) for
+guidance on incorporating those models (you'll need to add their files to `data/`).
 
 ---
 
@@ -643,7 +756,7 @@ The CMS Data folder also contains additional model packages (CMS-HCC V28, ESRD V
 
 9. **No authentication.** The API has no built-in auth layer. Do not expose this server to the public internet with real patient data. Run it on `localhost` or behind an authenticated reverse proxy.
 
-10. **Clinical notes may contain PHI.** Text submitted via the chatbot is sent to the Anthropic API. Ensure you have appropriate data use agreements and de-identify notes where required before using with real patient data.
+10. **Clinical notes may contain PHI.** The built-in [PHI guardrail](#phi-guardrails) de-identifies detected identifiers before any text is sent to an LLM, but detection is not guaranteed to be exhaustive. When using the **Claude** provider, sanitized text is still sent to the Anthropic API — ensure you have appropriate data use agreements. For a fully local path, run **MedGemma** (self-hosted) for all steps so no note data leaves your environment. Always confirm the guardrail reports `available: true` at `/api/status` before submitting real notes.
 
 11. **Python 3.10+ required.** The f-string syntax used in age-variable naming requires Python 3.10 as a minimum. Python 3.13 is verified to work.
 
@@ -653,10 +766,12 @@ The CMS Data folder also contains additional model packages (CMS-HCC V28, ESRD V
 
 ### Add CMS-HCC V28 (115 HCCs)
 
-The CMS Data folder already contains the V28 reference files. To add a V28 calculator:
+The V28 reference files are not bundled (this repo ships only the V22 subset). Obtain
+them from the CMS 2027 model software release and add them under `data/` (e.g.
+`data/v28_internal/`). To add a V28 calculator:
 
 1. Copy `backend/hcc_calculator.py` to `backend/hcc_calculator_v28.py`
-2. Update `INTERNAL_DATA_PATH` to point to the V28 internal data folder
+2. Update `INTERNAL_DATA_PATH` to point to the V28 internal data folder under `data/`
 3. Change `CE_MODEL_COLS` if V28 uses different model names
 4. Add a new endpoint `/api/chat-v28` in `app.py` that instantiates `HCCCalculatorV28`
 
@@ -694,11 +809,42 @@ pip install gunicorn
 gunicorn backend.app:app -w 2 -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:8000
 ```
 
-Ensure the CMS Data path is absolute and accessible on the server. The `tfidf_index.pkl` file will be created in `backend/` on first startup and can be committed or mounted as a volume to avoid the rebuild on each deploy.
+The bundled `data/` folder ships with the repo, so no external data mount is needed
+(or set `CMS_DATA_PATH` to relocate it). The `tfidf_index.pkl` file will be created in `backend/` on first startup and can be committed or mounted as a volume to avoid the rebuild on each deploy.
 
 ---
 
 ## Changelog
+
+### v1.2.0 — 2026-07-13 (multi-provider, guardrails, evaluation, bundled data)
+
+Major feature release. Verified end-to-end (Claude pipeline, MedGemma via a local
+OpenAI-compatible endpoint, and PHI redaction).
+
+**1. Pluggable LLM providers, per pipeline step**
+- New `backend/llm_providers.py`: `ClaudeProvider` (Anthropic SDK) and `VLLMProvider`
+  (OpenAI SDK → vLLM / any OpenAI-compatible server, e.g. MedGemma).
+- Each step (extract / select / explain) is independently configurable via the sidebar
+  dropdowns or `LLM_PROVIDER_*` env vars. New `GET /api/config`; `/api/chat` returns
+  `providers_used`.
+
+**2. PHI/PII guardrail (LLM Guard)**
+- New `backend/guardrails.py`: de-identifies detected PHI to placeholders **before** any
+  text reaches an LLM; no re-identification; only entity types/counts are surfaced.
+  Compatible with both modern (0.3.x) and legacy (0.0.x) `llm-guard` scan APIs.
+
+**3. Evaluation harness (`evaluation/`)**
+- RAG retrieval metrics, Claude-vs-MedGemma provider comparison, guardrail PHI eval, and
+  H2O sonar evaluators, with gold datasets and an isolated `requirements.txt`.
+
+**4. Bundled CMS reference data**
+- The 7 required CMS V22 CSVs are now committed under `data/` (~1.5 MB); the app is
+  self-contained. `backend/hcc_calculator.py` and `backend/rag_icd10.py` default to
+  `data/` and honor a `CMS_DATA_PATH` override.
+
+**5. Frontend & docs**
+- Per-step model selectors and a "🔒 PHI de-identified" banner; new
+  [`docs/vllm-medgemma.md`](docs/vllm-medgemma.md) serving guide (vLLM + Ollama).
 
 ### v1.1.0 — 2026-06-02 (post-verification fixes)
 

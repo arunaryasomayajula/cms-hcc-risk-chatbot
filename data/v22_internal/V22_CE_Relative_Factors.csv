@@ -1,0 +1,133 @@
+﻿Variable,Label,COMMUNITY_NA,COMMUNITY_PBA,COMMUNITY_FBA,COMMUNITY_ND,COMMUNITY_PBD,COMMUNITY_FBD,INSTITUTIONAL
+F0_34," Female 0-34",,,,0.244,0.344,0.318,1.031
+F35_44," Female 35-44",,,,0.303,0.383,0.306,0.999
+F45_54," Female 45-54",,,,0.322,0.374,0.338,1.007
+F55_59," Female 55-59",,,,0.35,0.371,0.388,0.986
+F60_64," Female 60-64",,,,0.411,0.395,0.449,1.028
+F65_69," Female 65-69",0.312,0.341,0.425,,,,1.2
+F70_74," Female 70-74",0.374,0.406,0.511,,,,1.092
+F75_79," Female 75-79",0.448,0.484,0.611,,,,0.995
+F80_84," Female 80-84",0.537,0.552,0.739,,,,0.86
+F85_89," Female 85-89",0.664,0.678,0.917,,,,0.749
+F90_94," Female 90-94",0.797,0.817,1.037,,,,0.626
+F95_GT," Female 95+",0.816,0.913,1.094,,,,0.456
+M0_34," Male 0-34",,,,0.155,0.33,0.225,1.049
+M35_44," Male 35-44",,,,0.19,0.267,0.204,1.074
+M45_54," Male 45-54",,,,0.221,0.3,0.281,1.008
+M55_59," Male 55-59",,,,0.271,0.307,0.372,1.055
+M60_64," Male 60-64",,,,0.303,0.343,0.486,1.039
+M65_69," Male 65-69",0.3,0.334,0.492,,,,1.269
+M70_74," Male 70-74",0.379,0.409,0.582,,,,1.323
+M75_79," Male 75-79",0.466,0.491,0.692,,,,1.331
+M80_84," Male 80-84",0.561,0.546,0.816,,,,1.189
+M85_89," Male 85-89",0.694,0.679,1.009,,,,1.129
+M90_94," Male 90-94",0.857,0.822,1.186,,,,0.964
+M95_GT," Male 95+",0.976,1.038,1.268,,,,0.781
+OriginallyDisabled_Female," Originally Disabled Female",0.244,0.126,0.172,,,,
+OriginallyDisabled_Male," Originally Disabled Male",0.152,0.105,0.192,,,,
+ORIGDIS,Originally Disabled,,,,,,,0
+LTIMCAID,LTI Medicaid months,,,,,,,0.062
+HCC1," HIV/AIDS",0.312,0.55,0.585,0.288,0.232,0.5,1.747
+HCC2," Septicemia/Sepsis/Systemic Inflammatory Response Syndrome/Shock",0.455,0.409,0.596,0.532,0.417,0.811,0.346
+HCC6," Opportunistic Infections",0.435,0.482,0.548,0.704,0.765,0.919,0.58
+HCC8," Metastatic Cancer and Acute Leukemia",2.625,2.442,2.542,2.644,2.582,2.767,1.143
+HCC9," Lung and Other Severe Cancers",0.97,0.955,0.973,0.927,0.879,1.025,0.727
+HCC10," Lymphoma and Other Cancers",0.677,0.667,0.713,0.656,0.577,0.761,0.401
+HCC11," Colorectal/Bladder/and Other Cancers",0.301,0.325,0.332,0.352,0.4,0.361,0.293
+HCC12," Breast/Prostate/and Other Cancers and Tumors",0.146,0.152,0.159,0.202,0.182,0.19,0.199
+HCC17," Diabetes with Acute Complications",0.318,0.354,0.346,0.371,0.423,0.431,0.441
+HCC18," Diabetes with Chronic Complications",0.318,0.354,0.346,0.371,0.423,0.431,0.441
+HCC19," Diabetes without Complication",0.104,0.098,0.097,0.128,0.136,0.16,0.16
+HCC21," Protein-Calorie Malnutrition",0.545,0.562,0.752,0.753,0.709,0.845,0.26
+HCC22," Morbid Obesity",0.273,0.244,0.41,0.227,0.242,0.373,0.511
+HCC23," Other Significant Endocrine and Metabolic Disorders",0.228,0.193,0.228,0.444,0.351,0.353,0.337
+HCC27," End-Stage Liver Disease",0.962,0.889,1.242,1.11,0.963,1.349,0.962
+HCC28," Cirrhosis of Liver",0.39,0.46,0.342,0.394,0.324,0.491,0.39
+HCC29," Chronic Hepatitis",0.165,0.263,0.038,0.267,0.324,0.4,0.39
+HCC33," Intestinal Obstruction/Perforation",0.246,0.324,0.369,0.524,0.51,0.503,0.335
+HCC34," Chronic Pancreatitis",0.276,0.412,0.333,0.678,0.849,0.875,0.241
+HCC35," Inflammatory Bowel Disease",0.294,0.209,0.334,0.483,0.496,0.613,0.244
+HCC39," Bone/Joint/Muscle Infections/Necrosis",0.425,0.418,0.552,0.474,0.491,0.713,0.345
+HCC40," Rheumatoid Arthritis and Inflammatory Connective Tissue Disease",0.423,0.39,0.37,0.377,0.29,0.345,0.329
+HCC46," Severe Hematological Disorders",1.388,1.226,1.219,3.188,3.529,4.256,0.68
+HCC47," Disorders of Immunity",0.625,0.449,0.529,0.848,0.69,0.589,0.529
+HCC48," Coagulation Defects and Other Specified Hematological Disorders",0.221,0.225,0.268,0.339,0.382,0.378,0.151
+HCC54," Drug/Alcohol Psychosis",0.383,0.388,0.706,0.569,0.613,0.919,0.102
+HCC55," Drug/Alcohol Dependence",0.383,0.377,0.522,0.285,0.286,0.366,0.102
+HCC57," Schizophrenia",0.608,0.547,0.612,0.395,0.366,0.432,0.271
+HCC58," Major Depressive/Bipolar/and Paranoid Disorders",0.395,0.413,0.444,0.209,0.163,0.178,0.271
+HCC70," Quadriplegia",1.314,1.274,1.098,1.053,1.328,1.056,0.497
+HCC71," Paraplegia",1.007,0.958,0.92,0.704,0.908,1.019,0.467
+HCC72," Spinal Cord Disorders/Injuries",0.528,0.556,0.552,0.456,0.384,0.407,0.229
+HCC73," Amyotrophic Lateral Sclerosis and Other Motor Neuron Disease",0.97,0.57,1.23,1.082,0.814,1.219,0.224
+HCC74," Cerebral Palsy",0.28,0.158,0,0.132,0.052,0,0
+HCC75," Myasthenia Gravis/Myoneural Disorders and Guillain-Barre Syndrome/Inflammatory and Toxic Neuropathy",0.457,0.364,0.436,0.528,0.331,0.465,0.369
+HCC76," Muscular Dystrophy",0.505,0.429,0.553,0.457,0.168,0.512,0.104
+HCC77," Multiple Sclerosis",0.441,0.407,0.687,0.54,0.459,0.794,0
+HCC78," Parkinsons and Huntingtons Diseases",0.674,0.629,0.751,0.585,0.394,0.516,0.145
+HCC79," Seizure Disorders and Convulsions",0.309,0.349,0.357,0.227,0.245,0.195,0.088
+HCC80," Coma/Brain Compression/Anoxic Damage",0.584,0.508,0.946,0.302,0.155,0.324,0.042
+HCC82," Respirator Dependence/Tracheostomy Status",1.055,0.914,2.304,1.024,0.676,1.575,1.631
+HCC83," Respiratory Arrest",0.658,0.704,1.033,0.781,0.429,0.484,0.727
+HCC84," Cardio-Respiratory Failure and Shock",0.302,0.301,0.471,0.578,0.429,0.484,0.297
+HCC85," Congestive Heart Failure",0.323,0.32,0.355,0.412,0.367,0.415,0.191
+HCC86," Acute Myocardial Infarction",0.233,0.28,0.473,0.306,0.438,0.618,0.497
+HCC87," Unstable Angina and Other Acute Ischemic Heart Disease",0.218,0.28,0.336,0.306,0.438,0.618,0.497
+HCC88," Angina Pectoris",0.14,0.175,0.068,0.121,0.22,0.205,0.497
+HCC96," Specified Heart Arrhythmias",0.268,0.283,0.369,0.284,0.258,0.377,0.224
+HCC99," Cerebral Hemorrhage",0.263,0.278,0.474,0.282,0.28,0.69,0.114
+HCC100," Ischemic or Unspecified Stroke",0.263,0.27,0.474,0.195,0.232,0.357,0.114
+HCC103," Hemiplegia/Hemiparesis",0.538,0.603,0.548,0.324,0.401,0.435,0.031
+HCC104," Monoplegia/Other Paralytic Syndromes",0.395,0.559,0.374,0.258,0.401,0.381,0.031
+HCC106," Atherosclerosis of the Extremities with Ulceration or Gangrene",1.461,1.452,1.744,1.506,1.601,1.74,0.884
+HCC107," Vascular Disease with Complications",0.4,0.443,0.54,0.486,0.549,0.756,0.321
+HCC108," Vascular Disease",0.298,0.316,0.324,0.333,0.326,0.319,0.094
+HCC110," Cystic Fibrosis",0.62,0.358,0.985,2.538,2.861,3.365,0.305
+HCC111," Chronic Obstructive Pulmonary Disease",0.328,0.358,0.422,0.262,0.293,0.354,0.305
+HCC112," Fibrosis of Lung and Other Chronic Lung Disorders",0.209,0.172,0.134,0.262,0.174,0.322,0.057
+HCC114," Aspiration and Specified Bacterial Pneumonias",0.599,0.666,0.707,0.53,0.373,0.49,0.067
+HCC115," Pneumococcal Pneumonia/Empyema/Lung Abscess",0.221,0.302,0.162,0.128,0.22,0.049,0.067
+HCC122," Proliferative Diabetic Retinopathy and Vitreous Hemorrhage",0.217,0.276,0.223,0.171,0.195,0.284,0.46
+HCC124," Exudative Macular Degeneration",0.499,0.336,0.278,0.385,0.115,0.09,0.228
+HCC134," Dialysis Status",0.422,0.435,0.672,0.5,0.512,0.637,0.462
+HCC135," Acute Renal Failure",0.422,0.435,0.672,0.5,0.512,0.637,0.462
+HCC136," Chronic Kidney Disease/Stage 5",0.237,0.184,0.244,0.141,0.147,0.167,0.436
+HCC137," Chronic Kidney Disease/Severe (Stage 4)",0.237,0.184,0.244,0.141,0.035,0.079,0.202
+HCC157," Pressure Ulcer of Skin with Necrosis Through to Muscle/Tendon/Bone",2.163,2.274,2.879,2.203,2.655,2.626,0.924
+HCC158," Pressure Ulcer of Skin with Full Thickness Skin Loss",1.204,1.074,1.576,1.393,1.237,1.559,0.295
+HCC161," Chronic Ulcer of Skin/Except Pressure",0.535,0.586,0.757,0.636,0.62,0.631,0.294
+HCC162," Severe Skin Burn or Condition",0.321,0.525,0.003,0.348,0.119,0.537,0.076
+HCC166," Severe Head Injury",0.584,1.065,0.946,0.302,0.155,0.324,0.042
+HCC167," Major Head Injury",0.191,0.133,0.274,0.044,0.049,0.171,0
+HCC169," Vertebral Fractures without Spinal Cord Injury",0.495,0.516,0.552,0.456,0.384,0.407,0.209
+HCC170," Hip Fracture/Dislocation",0.418,0.383,0.52,0.513,0.484,0.668,0
+HCC173," Traumatic Amputations and Complications",0.266,0.233,0.412,0.34,0.232,0.383,0.267
+HCC176," Complications of Specified Implanted Device or Graft",0.597,0.584,0.721,0.871,0.876,1.156,0.502
+HCC186," Major Organ Transplant or Replacement Status",1,0.795,0.816,0.618,0.655,1.075,0.962
+HCC188," Artificial Openings for Feeding or Elimination",0.571,0.579,0.775,0.785,0.867,0.87,0.5
+HCC189," Amputation Status/Lower Limb/Amputation Complications",0.588,0.737,0.787,0.455,0.696,1.065,0.407
+HCC47_gCancer,Immune Disorders*Cancer,0.893,0.776,0.815,0.675,0.808,0.652,
+HCC85_gDiabetesMellit,Congestive Heart Failure*Diabetes,0.154,0.178,0.205,0.096,0.139,0.16,
+HCC85_gCopdCF,Congestive Heart Failure*Chronic Obstructive Pulmonary Disease,0.19,0.186,0.24,0.174,0.181,0.217,
+HCC85_gRenal,Congestive Heart Failure*Renal,0.27,0.299,0.271,0.493,0.609,0.711,
+gRespDepandArre_gCopdCF,Cardiorespiratory Failure*Chronic Obstructive Pulmonary Disease,0.336,0.46,0.564,0.256,0.449,0.524,
+HCC85_HCC96,Congestive Heart Failure*Specified Heart Arrhythmias,0.105,0.116,0.2,0.285,0.318,0.405,
+gSubstanceAbuse_gPsychiatric,Substance Abuse*Psychiatric,,,,0.191,0.23,0.233,
+CHF_gCopdCF,Congestive Heart Failure*Chronic Obstructive Pulmonary Disease,,,,,,,0.164
+gCopdCF_CARD_RESP_FAIL,Chronic Obstructive Pulmonary Disease*Cardiorespiratory Failure,,,,,,,0.423
+SEPSIS_PRESSURE_ULCER,Sepsis*Pressure Ulcer,,,,,,,0.252
+SEPSIS_ARTIF_OPENINGS,Sepsis*Artificial Openings for Feeding or Elimination,,,,,,,0.568
+ART_OPENINGS_PRESSURE_ULCER,Artificial Openings for Feeding or Elimination*Pressure Ulcer,,,,,,,0.331
+DIABETES_CHF,Diabetes*Congestive Heart Failure,,,,,,,0.154
+gCopdCF_ASP_SPEC_BACT_PNEUM,Chronic Obstructive Pulmonary Disease*Aspiration and Specified Bacterial Pneumonias,,,,,,,0.254
+ASP_SPEC_BACT_PNEUM_PRES_ULC,Aspiration and Specified Bacterial Pneumonias*Pressure Ulcer,,,,,,,0.366
+SEPSIS_ASP_SPEC_BACT_PNEUM,Sepsis*Aspiration and Specified Bacterial Pneumonias,,,,,,,0.321
+SCHIZOPHRENIA_gCopdCF,Schizophrenia*Chronic Obstructive Pulmonary Disease,,,,,,,0.363
+SCHIZOPHRENIA_CHF,Schizophrenia*Congestive Heart Failure,,,,,,,0.173
+SCHIZOPHRENIA_SEIZURES,Schizophrenia*Seizure Disorders and Convulsions,,,,,,,0.483
+DISABLED_HCC85,"Disabled, Congestive Heart Failure",,,,,,,0.321
+DISABLED_PRESSURE_ULCER,"Disabled, Pressure Ulcer",,,,,,,0.608
+DISABLED_HCC161,"Disabled, Chronic Ulcer of the Skin, Except Pressure Ulcer",,,,,,,0.369
+DISABLED_HCC39,"Disabled, Bone/Joint Muscle Infections/Necrosis",,,,,,,0.567
+DISABLED_HCC77,"Disabled, Multiple Sclerosis",,,,,,,0.425
+DISABLED_HCC6,"Disabled, Opportunistic Infections",,,,,,,0.277

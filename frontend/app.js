@@ -12,6 +12,12 @@ const sidebar     = document.getElementById('sidebar');
 const sidebarToggle  = document.getElementById('sidebarToggle');
 const sidebarOpenBtn = document.getElementById('sidebarOpenBtn');
 const statusBadge = document.getElementById('statusBadge');
+const extractProvider = document.getElementById('extractProvider');
+const selectProvider  = document.getElementById('selectProvider');
+const explainProvider = document.getElementById('explainProvider');
+const providerNote    = document.getElementById('providerNote');
+
+const PROVIDER_LABELS = { claude: 'Claude', medgemma: 'MedGemma (vLLM)' };
 
 /* ── Sidebar toggle ─────────────────────────────────────────────────────────── */
 sidebarToggle.addEventListener('click', () => {
@@ -42,6 +48,48 @@ async function pollStatus() {
 }
 pollStatus();
 statusInterval = setInterval(pollStatus, 5000);
+
+/* ── Model provider config ──────────────────────────────────────────────────── */
+async function loadConfig() {
+  try {
+    const r = await fetch('/api/config');
+    const d = await r.json();
+    const p = d.providers || {};
+    const available = p.available_providers || ['claude'];
+    const defaults  = p.step_defaults || {};
+    const selects = {
+      extract: extractProvider,
+      select:  selectProvider,
+      explain: explainProvider,
+    };
+    for (const [step, sel] of Object.entries(selects)) {
+      if (!sel) continue;
+      sel.innerHTML = available.map(name =>
+        `<option value="${name}">${PROVIDER_LABELS[name] || name}</option>`
+      ).join('');
+      sel.value = defaults[step] || available[0];
+    }
+    const reach = p.vllm_reachable
+      ? `MedGemma reachable at ${escHtml(p.vllm_base_url || '')} (${escHtml(p.vllm_model || '')}).`
+      : `MedGemma endpoint not reachable — start vLLM to use it.`;
+    const guard = d.guardrails || {};
+    const guardMsg = guard.available
+      ? 'PHI guardrail: on.'
+      : `PHI guardrail: off (${escHtml(guard.error || 'unavailable')}).`;
+    if (providerNote) providerNote.innerHTML = `${reach}<br>${guardMsg}`;
+  } catch (_) {
+    if (providerNote) providerNote.textContent = 'Could not load model config.';
+  }
+}
+loadConfig();
+
+function getProviders() {
+  return {
+    extract: extractProvider?.value || 'claude',
+    select:  selectProvider?.value  || 'claude',
+    explain: explainProvider?.value || 'claude',
+  };
+}
 
 /* ── Demographics ───────────────────────────────────────────────────────────── */
 function getDemographics() {
@@ -85,11 +133,28 @@ function removeTyping() {
   document.getElementById('typing')?.remove();
 }
 
-function addBotMessage(text, icd10Codes, hccResult, conditionsFound) {
+function buildGuardrailBanner(guardrail) {
+  if (!guardrail || !guardrail.redacted || !(guardrail.findings || []).length) return '';
+  const items = guardrail.findings
+    .map(f => `${escHtml(f.entity_type)} ×${f.count}`)
+    .join(', ');
+  return `<div class="phi-banner">🔒 PHI de-identified before analysis: ${items}</div>`;
+}
+
+function buildProvidersCaption(providersUsed) {
+  if (!providersUsed) return '';
+  const label = s => PROVIDER_LABELS[s] || s;
+  return `<div class="providers-caption">Models · extract: ${escHtml(label(providersUsed.extract))}`
+    + ` · select: ${escHtml(label(providersUsed.select))}`
+    + ` · explain: ${escHtml(label(providersUsed.explain))}</div>`;
+}
+
+function addBotMessage(text, icd10Codes, hccResult, conditionsFound, guardrail, providersUsed) {
   const div = document.createElement('div');
   div.className = 'message bot';
 
   let inner = `<div class="avatar">🏥</div><div class="bubble">`;
+  inner += buildGuardrailBanner(guardrail);
   inner += `<div>${markdownToHtml(text)}</div>`;
 
   // Result cards
@@ -112,6 +177,7 @@ function addBotMessage(text, icd10Codes, hccResult, conditionsFound) {
     inner += `</div>`;
   }
 
+  inner += buildProvidersCaption(providersUsed);
   inner += `</div>`;
   div.innerHTML = inner;
   messages.appendChild(div);
@@ -250,6 +316,7 @@ async function send() {
         message: text,
         demographics: getDemographics(),
         conversation_history: conversationHistory,
+        providers: getProviders(),
       }),
     });
 
@@ -262,6 +329,8 @@ async function send() {
       data.icd10_codes || [],
       data.hcc_result || null,
       data.conditions_found || [],
+      data.guardrail || null,
+      data.providers_used || null,
     );
   } catch (err) {
     removeTyping();

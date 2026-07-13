@@ -8,15 +8,14 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# Reference data ships bundled under the repo's data/ folder so the project is
+# self-contained. Override with the CMS_DATA_PATH env var to point at an external
+# copy that uses the same layout (icd10_mappings/ and v22_internal/).
 CMS_DATA_PATH = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), '..', '..', 'CMS Data')
+    os.environ.get('CMS_DATA_PATH')
+    or os.path.join(os.path.dirname(__file__), '..', 'data')
 )
-INTERNAL_DATA_PATH = os.path.join(
-    CMS_DATA_PATH,
-    'python-2027-initial-model-software',
-    'CMS_HCC_v22_2027_O1_initial_package_v1',
-    'software', 'CMS_HCC_v22', 'data', 'input', 'internal'
-)
+INTERNAL_DATA_PATH = os.path.join(CMS_DATA_PATH, 'v22_internal')
 
 CUTOFF_DATE = datetime(2027, 2, 1)
 

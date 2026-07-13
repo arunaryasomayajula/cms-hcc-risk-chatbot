@@ -1,6 +1,8 @@
 fastapi
 uvicorn[standard]
 anthropic
+openai
+llm-guard
 chromadb
 sentence-transformers
 pandas
