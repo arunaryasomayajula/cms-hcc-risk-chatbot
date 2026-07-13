@@ -1,0 +1,15 @@
+# Evaluation harness dependencies (kept separate from the app runtime).
+# The app itself does NOT need these.
+
+# H2O sonar LLM evaluators (PII leakage, toxicity, fairness/bias).
+# If unavailable for your platform, run_h2o_sonar_eval.py falls back to built-in checks.
+h2o-sonar
+
+# Optional: RAG metric helpers. run_rag_eval.py works without it (uses built-in
+# recall@k / MRR), but ragas can be wired in for context precision/recall.
+ragas
+
+# Shared with the backend (import the pipeline / providers / guardrails).
+anthropic
+openai
+pandas

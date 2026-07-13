@@ -13,10 +13,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
-import anthropic
 
 from rag_icd10 import ICD10RAG
 from hcc_calculator import HCCCalculator
+import llm_providers
+import guardrails
 
 
 def _parse_json(text: str) -> dict:
@@ -36,7 +37,6 @@ logger = logging.getLogger(__name__)
 
 rag = ICD10RAG()
 calculator = HCCCalculator()
-claude = anthropic.Anthropic(api_key=os.environ.get('ANTHROPIC_API_KEY', ''))
 executor = ThreadPoolExecutor(max_workers=2)
 
 _initialized = False
@@ -91,6 +91,8 @@ class ChatRequest(BaseModel):
     message: str
     demographics: Optional[Demographics] = None
     conversation_history: Optional[List[dict]] = []
+    # Per-step provider overrides, e.g. {"extract": "medgemma", "explain": "claude"}
+    providers: Optional[dict] = None
 
 
 # ── Routes ─────────────────────────────────────────────────────────────────────
@@ -110,6 +112,16 @@ async def status():
         "error": _init_error,
         "rag_ready": rag.is_ready,
         "calculator_ready": calculator.is_ready,
+        "guardrails": guardrails.status(),
+    }
+
+
+@app.get("/api/config")
+async def config():
+    """Model-provider config so the frontend can populate the per-step selectors."""
+    return {
+        "providers": llm_providers.config_summary(),
+        "guardrails": guardrails.status(),
     }
 
 
@@ -141,10 +153,21 @@ async def chat(req: ChatRequest):
 
     demo_dict = req.demographics.model_dump() if req.demographics else {}
     history = list(req.conversation_history or [])
-    user_text = req.message.strip()
+    raw_text = req.message.strip()
 
-    if not user_text:
+    if not raw_text:
         raise HTTPException(400, "Empty message")
+
+    # ── Guardrail: de-identify PHI before anything is sent to an LLM ──────────
+    deid = guardrails.deidentify(raw_text)
+    user_text = deid.sanitized_text  # everything downstream uses the sanitized text
+
+    # ── Resolve which provider serves each pipeline step ──────────────────────
+    step_providers = llm_providers.resolve_step_providers(req.providers)
+
+    def run_step(step: str, system: str, messages: list, max_tokens: int) -> str:
+        provider = llm_providers.get_provider(step_providers[step])
+        return provider.complete(system=system, messages=messages, max_tokens=max_tokens)
 
     # ── Step 1: detect if this looks like clinical notes ──────────────────────
     clinical_keywords = [
@@ -165,20 +188,24 @@ async def chat(req: ChatRequest):
 
     if is_clinical:
         # ── Step 2: extract conditions ────────────────────────────────────────
-        extract_resp = claude.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=800,
-            system=(
-                "Extract distinct medical diagnoses and conditions from clinical notes. "
-                "Return ONLY a JSON object like: "
-                '{"conditions": [{"condition": "Type 2 diabetes mellitus", '
-                '"search_query": "type 2 diabetes mellitus without complication"}, ...]}'
-                " Include chronic and acute conditions. Be specific."
-            ),
-            messages=[{"role": "user", "content": user_text}],
-        )
         try:
-            conditions_found = _parse_json(extract_resp.content[0].text).get("conditions", [])
+            extract_text = run_step(
+                "extract",
+                system=(
+                    "Extract distinct medical diagnoses and conditions from clinical notes. "
+                    "Return ONLY a JSON object like: "
+                    '{"conditions": [{"condition": "Type 2 diabetes mellitus", '
+                    '"search_query": "type 2 diabetes mellitus without complication"}, ...]}'
+                    " Include chronic and acute conditions. Be specific."
+                ),
+                messages=[{"role": "user", "content": user_text}],
+                max_tokens=800,
+            )
+        except Exception as exc:
+            logger.error(f"Condition extraction call failed: {exc}", exc_info=True)
+            raise HTTPException(502, f"LLM provider error (extract): {exc}")
+        try:
+            conditions_found = _parse_json(extract_text).get("conditions", [])
         except (json.JSONDecodeError, IndexError, AttributeError, ValueError) as e:
             logger.warning(f"Condition extraction parse failed: {e}")
             conditions_found = []
@@ -194,31 +221,35 @@ async def chat(req: ChatRequest):
                     hit["for_condition"] = cond.get("condition", "")
                     candidates.append(hit)
 
-        # ── Step 4: Claude selects best codes ────────────────────────────────
+        # ── Step 4: select best codes ────────────────────────────────────────
         if candidates:
-            select_resp = claude.messages.create(
-                model="claude-sonnet-4-6",
-                max_tokens=1500,
-                system=(
-                    "You are a certified medical coder. Given clinical notes and ICD-10 "
-                    "candidate codes from semantic search, select the most appropriate codes. "
-                    "Return ONLY JSON: "
-                    '{"selected_codes": [{"icd10": "E119", "description": "...", '
-                    '"cc": "19", "condition": "...", "rationale": "...", "confidence": 0.95}]}'
-                    " Use the MOST SPECIFIC code supported by the documentation. "
-                    "Remove codes that are not supported or are duplicates at a lower specificity."
-                ),
-                messages=[{
-                    "role": "user",
-                    "content": (
-                        f"Clinical notes:\n{user_text}\n\n"
-                        f"Extracted conditions: {json.dumps(conditions_found)}\n\n"
-                        f"ICD-10 candidates:\n{json.dumps(candidates[:25], indent=2)}"
-                    )
-                }],
-            )
             try:
-                icd10_results = _parse_json(select_resp.content[0].text).get("selected_codes", [])
+                select_text = run_step(
+                    "select",
+                    system=(
+                        "You are a certified medical coder. Given clinical notes and ICD-10 "
+                        "candidate codes from semantic search, select the most appropriate codes. "
+                        "Return ONLY JSON: "
+                        '{"selected_codes": [{"icd10": "E119", "description": "...", '
+                        '"cc": "19", "condition": "...", "rationale": "...", "confidence": 0.95}]}'
+                        " Use the MOST SPECIFIC code supported by the documentation. "
+                        "Remove codes that are not supported or are duplicates at a lower specificity."
+                    ),
+                    messages=[{
+                        "role": "user",
+                        "content": (
+                            f"Clinical notes:\n{user_text}\n\n"
+                            f"Extracted conditions: {json.dumps(conditions_found)}\n\n"
+                            f"ICD-10 candidates:\n{json.dumps(candidates[:25], indent=2)}"
+                        )
+                    }],
+                    max_tokens=1500,
+                )
+            except Exception as exc:
+                logger.error(f"Code selection call failed: {exc}", exc_info=True)
+                raise HTTPException(502, f"LLM provider error (select): {exc}")
+            try:
+                icd10_results = _parse_json(select_text).get("selected_codes", [])
             except (json.JSONDecodeError, IndexError, AttributeError, ValueError) as e:
                 logger.warning(f"Code selection parse failed: {e}")
                 icd10_results = candidates[:5]
@@ -257,15 +288,18 @@ async def chat(req: ChatRequest):
         )
 
     messages = history + [{"role": "user", "content": augmented}]
-    final_resp = claude.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=2000,
-        system=SYSTEM_PROMPT,
-        messages=messages,
-    )
-    assistant_text = final_resp.content[0].text
+    try:
+        assistant_text = run_step(
+            "explain",
+            system=SYSTEM_PROMPT,
+            messages=messages,
+            max_tokens=2000,
+        )
+    except Exception as exc:
+        logger.error(f"Explanation call failed: {exc}", exc_info=True)
+        raise HTTPException(502, f"LLM provider error (explain): {exc}")
 
-    # Return clean history (don't expose the augmented system context)
+    # Return clean history (sanitized text only — PHI is never stored)
     clean_history = history + [
         {"role": "user", "content": user_text},
         {"role": "assistant", "content": assistant_text},
@@ -277,6 +311,8 @@ async def chat(req: ChatRequest):
         "hcc_result": hcc_result,
         "conditions_found": conditions_found,
         "conversation_history": clean_history,
+        "guardrail": deid.to_dict(),
+        "providers_used": step_providers,
         "status": "success",
     }
 

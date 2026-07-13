@@ -15,6 +15,12 @@ env/
 # ChromaDB vector index (rebuilt automatically on first run)
 backend/chroma_db/
 
+# TF-IDF index cache (rebuilt automatically on first run)
+backend/tfidf_index.pkl
+
+# Evaluation outputs
+evaluation/results/
+
 # Environment / secrets
 .env
 .env.*

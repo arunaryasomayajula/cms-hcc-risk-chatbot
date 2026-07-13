@@ -375,6 +375,47 @@ body {
 .send-btn svg { width: 18px; height: 18px; color: white; stroke: white; }
 .send-btn:disabled { background: #94a3b8; cursor: not-allowed; }
 
+/* ── AI Models section ─────────────────────────────────────────────────────── */
+.section-divider {
+  margin-top: 6px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(255,255,255,.10);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #cbd5e1;
+}
+.section-divider .section-sub {
+  font-weight: 500;
+  text-transform: none;
+  letter-spacing: 0;
+  color: #64748b;
+  font-size: 0.7rem;
+}
+
+/* ── PHI guardrail banner (in bot bubble) ──────────────────────────────────── */
+.phi-banner {
+  display: inline-block;
+  margin-bottom: 8px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: #fef3c7;
+  color: #92400e;
+  border: 1px solid #fde68a;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+/* ── Providers-used caption ────────────────────────────────────────────────── */
+.providers-caption {
+  margin-top: 8px;
+  font-size: 0.7rem;
+  color: #94a3b8;
+  border-top: 1px solid #f1f5f9;
+  padding-top: 6px;
+}
+
 /* ── Responsive ────────────────────────────────────────────────────────────── */
 @media (max-width: 700px) {
   .sidebar { position: fixed; z-index: 200; height: 100%; }
