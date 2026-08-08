@@ -18,6 +18,13 @@ backend/chroma_db/
 # TF-IDF index cache (rebuilt automatically on first run)
 backend/tfidf_index.pkl
 
+# AirLLM layer shards (re-split from the HF cache on first load; ~1x model size)
+backend/.airllm_shards/
+.airllm_shards/
+
+# Optional isolated venv for the AirLLM sidecar (see backend/requirements-local.txt)
+.venv-airllm/
+
 # Evaluation outputs
 evaluation/results/
 

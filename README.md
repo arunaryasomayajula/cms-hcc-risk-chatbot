@@ -12,7 +12,7 @@ A web-based, AI-powered chatbot that accepts patient clinical notes, maps descri
 2. [Architecture](#architecture)
 3. [How the Pipeline Works](#how-the-pipeline-works)
 4. [CMS HCC Model Primer](#cms-hcc-model-primer)
-5. [Model Providers (Claude / MedGemma via vLLM)](#model-providers-claude--medgemma-via-vllm)
+5. [Model Providers (Claude / vLLM / AirLLM / Ollama)](#model-providers-claude--vllm--airllm--ollama)
 6. [PHI Guardrails](#phi-guardrails)
 7. [Evaluation](#evaluation)
 8. [Prerequisites](#prerequisites)
@@ -34,9 +34,10 @@ A web-based, AI-powered chatbot that accepts patient clinical notes, maps descri
 
 | Capability | Detail |
 |---|---|
-| **Clinical NLP** | Extracts discrete diagnoses and conditions from free-text clinical notes using an LLM (Claude or self-hosted MedGemma) |
+| **Clinical NLP** | Extracts discrete diagnoses and conditions from free-text clinical notes using an LLM (Claude, or a self-hosted open-weight model) |
 | **PHI guardrail** | De-identifies names, dates, MRNs, SSNs, etc. (LLM Guard) before any text reaches an LLM |
-| **Pluggable models** | Each pipeline step is independently served by Claude or MedGemma (via vLLM / any OpenAI-compatible endpoint) |
+| **Pluggable models** | Each pipeline step independently picks a **provider and a model** at request time: Claude, vLLM, AirLLM (local, layer-streamed), or Ollama |
+| **Runs on your hardware** | Local inference auto-detects CPU / GTX 10-series / RTX 20-50 / Blackwell / Apple Silicon and adapts dtype, context, and token caps |
 | **ICD-10 RAG search** | Searches ~10 k HCC-relevant ICD-10-CM codes using a local TF-IDF index (sklearn) — no internet or model download required |
 | **Code validation** | A second LLM pass applies medical coder judgment to select the most specific, documentation-supported codes |
 | **HCC calculation** | Pure-Python implementation of the CMS HCC v22 model: ICD-10 → CC → HCC (with hierarchies) → diagnosis categories → interaction terms → risk scores |
@@ -64,16 +65,16 @@ A web-based, AI-powered chatbot that accepts patient clinical notes, maps descri
 │                                                                   │
 │  Guard   LLM Guard ──► de-identify PHI in the note (Anonymize)   │
 │                                                                   │
-│  Step 1  LLM (Claude | MedGemma) ──► Extract conditions (JSON)   │
+│  Step 1  LLM (any provider) ──► Extract conditions (JSON)        │
 │                                                                   │
 │  Step 2  TF-IDF index (sklearn, local) ──► Candidate ICD-10s    │
 │                                                                   │
-│  Step 3  LLM (Claude | MedGemma) ──► Select best codes (JSON)    │
+│  Step 3  LLM (any provider) ──► Select best codes (JSON)         │
 │                                                                   │
 │  Step 4  HCCCalculator ──► 9 risk scores                         │
 │                                                                   │
-│  Step 5  LLM (Claude | MedGemma) ──► Natural language summary    │
-│          (provider is configurable per step)                     │
+│  Step 5  LLM (any provider) ──► Natural language summary         │
+│          (provider AND model configurable per step)              │
 └──────────────────────────────┬──────────────────────────────────┘
                                 │ reads reference CSVs (read-only)
                                 ▼
@@ -84,7 +85,12 @@ A web-based, AI-powered chatbot that accepts patient clinical notes, maps descri
 
 | File | Role |
 |---|---|
-| `backend/app.py` | FastAPI app, request routing, Claude API calls, pipeline orchestration |
+| `backend/app.py` | FastAPI app, request routing, pipeline orchestration |
+| `backend/llm_providers.py` | Provider + model catalog; one OpenAI-compatible client for vLLM/AirLLM/Ollama |
+| `backend/hardware.py` | Device/dtype/context policy for local inference (CPU → Blackwell) |
+| `backend/airllm_server.py` | OpenAI-compatible sidecar wrapping AirLLM (separate process, port 8002) |
+| `backend/json_utils.py` | Tolerant JSON extraction shared by the app and the eval harness |
+| `backend/prompts.py` | The three step prompts and token budgets, shared with `evaluation/` |
 | `backend/rag_icd10.py` | Loads ICD-10 descriptions, builds/caches a TF-IDF index, exposes `search()` |
 | `backend/hcc_calculator.py` | Pure-Python CMS HCC v22 scoring engine (no SAS dependency) |
 | `frontend/index.html` | Single-page chat UI with demographics sidebar |
@@ -97,11 +103,11 @@ A web-based, AI-powered chatbot that accepts patient clinical notes, maps descri
 
 Every time a user submits a message that looks like clinical notes, the backend executes six sequential steps.
 
-> **Note:** The note is first **de-identified** (see [PHI Guardrails](#phi-guardrails)), and the three LLM steps (1, 3, 5) each run on the **configured provider — Claude or MedGemma** (see [Model Providers](#model-providers-claude--medgemma-via-vllm)). "Claude" below refers to the default provider; the flow is identical for MedGemma.
+> **Note:** The note is first **de-identified** (see [PHI Guardrails](#phi-guardrails)), and the three LLM steps (1, 3, 5) each run on the **configured provider and model** (Claude, vLLM, AirLLM, or Ollama) (see [Model Providers](#model-providers-claude--vllm--airllm--ollama)). "The LLM" below means whichever provider is configured for that step.
 
-### Step 1 — Condition extraction (LLM: Claude or MedGemma)
+### Step 1 — Condition extraction (LLM: any configured provider)
 
-The LLM is prompted to parse the free text and return a structured JSON list of distinct medical conditions with a targeted search query for each one. Claude may return JSON wrapped in markdown code fences (` ```json ... ``` `); the backend strips these automatically before parsing.
+The LLM is prompted to parse the free text and return a structured JSON list of distinct medical conditions with a targeted search query for each one. Models rarely return bare JSON — [`backend/json_utils.py`](backend/json_utils.py) tolerates markdown fences (` ```json ... ``` `), surrounding prose, trailing commas, and a bare array instead of the requested object. If it still cannot recover an object, the step records a `parse_failures` entry rather than silently returning nothing.
 
 ```json
 {
@@ -127,7 +133,7 @@ Only codes that appear in the V22 mapping file are indexed (~10,248 codes), keep
 **Why TF-IDF instead of a neural embedding model?**
 ICD-10 descriptions are short, domain-specific, and highly keyword-dependent ("Type 2 diabetes mellitus with diabetic chronic kidney disease, stage 4"). TF-IDF with bigrams performs well in this vocabulary and requires no internet connection, no model download, and no GPU. Build time is ~3 seconds; search latency is <1 ms.
 
-### Step 3 — Code selection (LLM: Claude or MedGemma)
+### Step 3 — Code selection (LLM: any configured provider)
 
 A second LLM call acts as a medical coder review. It receives:
 - The original clinical notes
@@ -152,7 +158,7 @@ Claude selects the most specific, documentation-supported codes, removes duplica
 
 6. **Score = Σ(flag × coefficient)** — Every active flag is multiplied by its model-specific regression coefficient from `V22_CE_Relative_Factors.csv` or `V22_NE_Relative_Factors.csv`. The dot product is the risk score for that model.
 
-### Step 5 — Natural language explanation (LLM: Claude or MedGemma)
+### Step 5 — Natural language explanation (LLM: any configured provider)
 
 Claude receives the complete analysis results (conditions, ICD-10 codes, active HCCs, interaction flags, and all nine scores) and generates a plain-English explanation of what fired, what the score means, and which payment model applies to the patient.
 
@@ -239,39 +245,75 @@ Twenty-six interaction variables capture pairs of conditions that together cost 
 
 ---
 
-## Model Providers (Claude / MedGemma via vLLM)
+## Model Providers (Claude / vLLM / AirLLM / Ollama)
 
 The three LLM steps — condition extraction, ICD-10 code selection, and the
-natural-language explanation — can each be served by a **different** model:
+natural-language explanation — can each be served by a **different provider and a
+different model**, chosen at request time:
 
-- **Claude** (default) via the Anthropic API.
-- **MedGemma** (`google/medgemma-27b-it` / `-4b-it`) served locally by **vLLM**
-  through its OpenAI-compatible API.
+| Provider | What it is | Use when |
+|---|---|---|
+| `claude` (default) | Anthropic API | You want the best accuracy and have a key |
+| `medgemma` | Any model served by **vLLM** | The model fits entirely in your VRAM |
+| `airllm` | **[AirLLM](https://github.com/lyogavin/airllm)** streaming layers from disk via a local sidecar | The model is *larger* than your VRAM (a 70B in ~4 GB) |
+| `ollama` | Quantized GGUF models served by **Ollama** | You want a local answer in seconds — the practical choice on CPU |
 
-Selection is **per pipeline step**, set either from the sidebar dropdowns
-(populated from `GET /api/config`) or via environment defaults:
+Selection is **per pipeline step**, from the sidebar's provider + model dropdowns
+(populated by `GET /api/config`) or via environment defaults:
 
 | Variable | Default | Values |
 |---|---|---|
-| `LLM_PROVIDER_EXTRACT` | `claude` | `claude` \| `medgemma` |
-| `LLM_PROVIDER_SELECT`  | `claude` | `claude` \| `medgemma` |
-| `LLM_PROVIDER_EXPLAIN` | `claude` | `claude` \| `medgemma` |
+| `LLM_PROVIDER_EXTRACT` | `claude` | `claude` \| `medgemma` \| `airllm` \| `ollama` |
+| `LLM_PROVIDER_SELECT`  | `claude` | ” |
+| `LLM_PROVIDER_EXPLAIN` | `claude` | ” |
+| `LLM_MODEL_EXTRACT` / `_SELECT` / `_EXPLAIN` | provider default | Model id for that step |
 | `CLAUDE_MODEL` | `claude-sonnet-4-6` | Anthropic model id |
-| `VLLM_BASE_URL` | `http://localhost:8001/v1` | vLLM OpenAI endpoint |
-| `VLLM_MODEL` | `google/medgemma-27b-it` | model served by vLLM |
-| `VLLM_API_KEY` | `EMPTY` | matches vLLM's `--api-key` |
+| `VLLM_BASE_URL` / `VLLM_MODEL` / `VLLM_API_KEY` | `http://127.0.0.1:8001/v1` · `google/medgemma-27b-it` · `EMPTY` | vLLM endpoint |
+| `AIRLLM_BASE_URL` / `AIRLLM_MODEL` | `http://127.0.0.1:8002/v1` · `Qwen/Qwen2.5-0.5B-Instruct` | AirLLM sidecar |
+| `OLLAMA_BASE_URL` / `OLLAMA_MODEL` | `http://127.0.0.1:11434/v1` · `qwen2.5:7b-instruct` | Ollama endpoint |
+| `LLM_ALLOW_UNLISTED_MODELS` | unset | Accept a model id the catalog doesn't list |
+| `LOCAL_INFERENCE_CONCURRENCY` | `1` | Local calls are serialized; raise only for a backend that parallelises |
 
-The abstraction lives in [`backend/llm_providers.py`](backend/llm_providers.py); any
-OpenAI-compatible server works by pointing `VLLM_BASE_URL`/`VLLM_MODEL` at it. See
-[`docs/vllm-medgemma.md`](docs/vllm-medgemma.md) for the full serving guide. Each
-`/api/chat` response includes `providers_used` so you can confirm which model served
-each step.
+> Use `127.0.0.1` rather than `localhost` in these URLs on Windows. `localhost`
+> resolves to IPv6 `::1` first and local servers usually bind IPv4 only, so every
+> request pays a full timeout first — measured here at 2.02 s vs 0.01 s.
+
+The abstraction lives in [`backend/llm_providers.py`](backend/llm_providers.py). The
+last three providers are one `OpenAICompatProvider` with different endpoints, so any
+OpenAI-compatible server (TGI, LM Studio, llama.cpp's server…) works by pointing one
+of the `*_BASE_URL` variables at it. Each `/api/chat` response reports
+`providers_used`, `models_used`, and `parse_failures`.
+
+Guides: [`docs/airllm.md`](docs/airllm.md) (local open-weight models, per-GPU setup)
+and [`docs/vllm-medgemma.md`](docs/vllm-medgemma.md) (vLLM and Ollama).
+
+### Hardware support
+
+Local inference adapts to the machine. [`backend/hardware.py`](backend/hardware.py)
+detects the device once and derives dtype, sequence length, output caps, and client
+timeouts from it — nothing is hardcoded.
+
+| Tier | Detected as | dtype chosen | Why |
+|---|---|---|---|
+| CPU | `cpu` | `float32` (`bfloat16` with AVX512-BF16) | fp16 matmul is unimplemented on CPU |
+| GTX 10-series (Pascal, sm_61) | `cuda` | `float32` | consumer Pascal runs fp16 at 1/64 rate — fp16 is *slower* |
+| RTX 20 / GTX 16 (Turing, sm_75) | `cuda` | `float16` | real fp16, no bf16 |
+| RTX 30/40, A100, H100 (sm_80+) | `cuda` | `bfloat16` | |
+| RTX 50 (Blackwell, sm_120) | `cuda` | `bfloat16` | needs a **CUDA 12.8+ torch wheel** |
+| Apple Silicon | `mps` | `float16` | AirLLM auto-selects its MLX path |
+
+The most common GPU failure is a torch wheel without kernels for your card — it is
+detected fine and then dies at the first kernel launch with *"no kernel image is
+available for execution on the device"*. This hits **new** cards (`sm_120` missing
+from older wheels) and **old** ones (`sm_61` dropped from recent wheels) alike. The
+startup check compares your compute capability against `torch.cuda.get_arch_list()`
+and prints the exact `pip install` line to fix it; the UI shows the same warning.
 
 ---
 
 ## PHI Guardrails
 
-Before any clinical note is sent to an LLM (Claude **or** MedGemma), it is scanned
+Before any clinical note is sent to an LLM (Claude, vLLM, AirLLM, or Ollama), it is scanned
 by **LLM Guard**'s `Anonymize` scanner. Detected PHI/PII — names, dates, phone
 numbers, emails, SSNs, medical-record numbers, locations — is **de-identified**
 (replaced with placeholders like `[REDACTED_PERSON_1]`) and the pipeline proceeds on
@@ -312,7 +354,7 @@ covers four strategies:
 | Script | Measures |
 |---|---|
 | `run_rag_eval.py` | ICD-10 retrieval `recall@k` / `MRR` vs a gold set (no API key) |
-| `run_provider_comparison.py` | Claude vs MedGemma: code F1, HCC set, score, latency |
+| `run_provider_comparison.py` | Any providers/models: code F1, HCC set, score, latency |
 | `run_guardrail_eval.py` | PHI detection precision/recall + clinical-term survival |
 | `run_h2o_sonar_eval.py` | H2O sonar PII-leakage / toxicity / fairness evaluators |
 
@@ -328,8 +370,31 @@ See [`evaluation/README.md`](evaluation/README.md) for usage and interpretation.
 | pip | Any recent | Included with Python |
 | Anthropic API key | — | Only if you use the Claude provider (default). Get one at [console.anthropic.com](https://console.anthropic.com) |
 | CMS reference data | — | **Bundled in this repo** under `data/` (~1.5 MB) — nothing to download |
-| ~100 MB disk | — | For the pickled TF-IDF index (`tfidf_index.pkl`, ~80 MB) |
-| Internet | Startup only | Required only for Claude API calls — no model downloads needed |
+| ~10 MB disk | — | For the pickled TF-IDF index (`tfidf_index.pkl`, ~2.4 MB) |
+| Internet | Startup only | Required for Claude API calls, and for the first download of a local model |
+| GPU | Optional | Only for local inference — see below. The default Claude path needs none |
+
+### Hardware for local models (optional)
+
+Only relevant if you use the `airllm`, `medgemma`, or `ollama` providers.
+
+| Your hardware | Recommended provider | Install |
+|---|---|---|
+| No GPU | **Ollama** | `ollama pull qwen2.5:7b-instruct` |
+| Any NVIDIA GPU, model fits in VRAM | **vLLM** | `pip install vllm` |
+| Any NVIDIA GPU, model exceeds VRAM | **AirLLM** | torch for your card + `backend/requirements-local.txt` |
+
+AirLLM disk cost is roughly **2x the model size** (it keeps the original snapshot
+and the layer shards). GPU users must install a torch wheel matching their card —
+RTX 50-series (Blackwell) needs CUDA 12.8+; GTX 10-series needs an older wheel.
+[`docs/airllm.md`](docs/airllm.md) has the matrix, and the app detects and reports a
+mismatch at startup.
+
+> **Throughput reality check.** AirLLM re-reads the whole model from disk per token.
+> Measured on a CPU-only laptop (Core Ultra 9 185H): **~10.4 s/token even for a 0.5B
+> model** — about 90 minutes for a single 512-token answer, and dtype makes no
+> difference because it is I/O-bound. On CPU, use Ollama. AirLLM is worth it when you
+> have a GPU and the model does not fit in its VRAM.
 
 ### CMS reference data (bundled)
 
@@ -385,7 +450,7 @@ Dependencies installed:
 | `fastapi` | Web framework for the REST API |
 | `uvicorn[standard]` | ASGI server |
 | `anthropic` | Official Anthropic Python SDK (Claude API) |
-| `openai` | Client for MedGemma served via vLLM's OpenAI-compatible API |
+| `openai` | Client for every OpenAI-compatible provider (vLLM, AirLLM sidecar, Ollama) |
 | `llm-guard` | PHI/PII de-identification (Anonymize scanner + Vault) |
 | `scikit-learn` | TF-IDF vectorizer and cosine similarity for ICD-10 search |
 | `pandas` | Loading and processing CMS reference CSVs |
@@ -395,11 +460,25 @@ Dependencies installed:
 
 > **Note:** `chromadb` and `sentence-transformers` are listed in `requirements.txt` for completeness but are not used at runtime. The active search engine is sklearn's `TfidfVectorizer` — fully local, no model download, no internet required at startup.
 
+#### Optional — local open-weight models (AirLLM)
+
+Only needed for the `airllm` provider. Install a torch wheel matching your GPU
+**first**, then:
+
+```bash
+pip install -r backend/requirements-local.txt
+```
+
+The file documents the per-hardware torch install (CPU / cu124 / cu128 for
+Blackwell) and why torch is deliberately not pinned there. Full guide:
+[`docs/airllm.md`](docs/airllm.md). The `ollama` provider needs nothing installed
+here — just a running Ollama.
+
 ---
 
 ## Configuration
 
-### Required — Anthropic API key
+### Anthropic API key (required only for the `claude` provider)
 
 Set your key as an environment variable before starting:
 
@@ -418,7 +497,7 @@ $env:ANTHROPIC_API_KEY = "sk-ant-api03-..."
 export ANTHROPIC_API_KEY="sk-ant-api03-..."
 ```
 
-> The key is read by `backend/llm_providers.py` via `os.environ.get('ANTHROPIC_API_KEY')`. It is never logged or committed. Not required if every pipeline step is set to MedGemma.
+> The key is read by `backend/llm_providers.py` via `os.environ.get('ANTHROPIC_API_KEY')`. It is never logged or committed. Not required if every pipeline step uses a local provider (`medgemma` / `airllm` / `ollama`) — `start.bat` and `start.sh` warn but continue.
 
 ### Optional — CMS data path override
 
@@ -575,6 +654,46 @@ Returns initialization state. The frontend polls this every 5 seconds until `ini
 }
 ```
 
+### `GET /api/config`
+
+Provider and model catalog for the sidebar selectors, plus detected hardware.
+Local endpoints are probed concurrently and the result cached for 30 s
+(`LLM_CATALOG_TTL`), so this returns in ~1 s even when a backend is down.
+
+```json
+{
+  "providers": [
+    {"name": "airllm", "label": "AirLLM (local)", "local": true,
+     "reachable": true, "base_url": "http://127.0.0.1:8002/v1",
+     "default_model": "Qwen/Qwen2.5-0.5B-Instruct",
+     "models": [{"id": "Qwen/Qwen2.5-7B-Instruct", "label": "Qwen2.5 7B",
+                 "note": "~15 GB - minutes per response"}]}
+  ],
+  "step_defaults": {"extract": "claude", "select": "claude", "explain": "claude"},
+  "model_defaults": {},
+  "hardware": {"backend": "cuda", "family": "Blackwell", "dtype": "bfloat16",
+               "tier": "cuda_large", "summary": "CUDA - RTX 5090 - 32.0 GB - bfloat16",
+               "warnings": []},
+  "guardrails": {"available": true}
+}
+```
+
+Model `note` text is resolved for the detected hardware tier, so the same catalog
+reads honestly on a laptop and on a workstation. `hardware.warnings` carries
+actionable setup problems (e.g. a torch wheel with no kernels for your GPU).
+
+### `GET /api/local-status`
+
+Live AirLLM sidecar state, polled by the UI only while a local request is running.
+Kept separate from `/api/status` (which is polled every 5 s) because it makes a
+network call.
+
+```json
+{"airllm": {"state": "generating", "model": "Qwen/Qwen2.5-7B-Instruct",
+            "layers_split": 26, "layers_total": 26,
+            "tokens_generated": 41, "tokens_requested": 512, "elapsed_s": 18.3}}
+```
+
 ### `POST /api/chat`
 
 Main endpoint. Accepts clinical notes and demographics; returns ICD-10 codes, HCC results, and a conversational response.
@@ -591,9 +710,18 @@ Main endpoint. Accepts clinical notes and demographics; returns ICD-10 codes, HC
     "ltimcaid":    0,
     "nemcaid":     0
   },
-  "conversation_history": []
+  "conversation_history": [],
+  "providers": {"extract": "airllm", "select": "ollama", "explain": "claude"},
+  "models":    {"extract": "Qwen/Qwen2.5-7B-Instruct",
+                "select":  "qwen2.5:7b-instruct",
+                "explain": "claude-sonnet-4-6"}
 }
 ```
+
+`providers` and `models` are optional and per-step; omitted steps fall back to the
+`LLM_PROVIDER_*` / `LLM_MODEL_*` environment defaults. An unknown provider or a model
+that is not in that provider's catalog falls back to the default with a logged
+warning rather than failing the request.
 
 **Demographics fields:**
 
@@ -611,6 +739,10 @@ Main endpoint. Accepts clinical notes and demographics; returns ICD-10 codes, HC
 {
   "response": "Based on this note, I identified four HCC conditions...",
   "status": "success",
+  "providers_used": {"extract": "airllm", "select": "ollama", "explain": "claude"},
+  "models_used":    {"extract": "Qwen/Qwen2.5-7B-Instruct",
+                     "select": "qwen2.5:7b-instruct", "explain": "claude-sonnet-4-6"},
+  "parse_failures": [],
   "conditions_found": [
     {"condition": "Type 2 diabetes with CKD stage 4",
      "search_query": "type 2 diabetes chronic kidney disease stage 4"}
@@ -676,7 +808,12 @@ cms-hcc-chatbot/
 │
 ├── backend/
 │   ├── app.py              FastAPI server, pipeline orchestration, per-step LLM calls
-│   ├── llm_providers.py    Claude + MedGemma/vLLM provider abstraction
+│   ├── llm_providers.py    Provider + model catalog (Claude/vLLM/AirLLM/Ollama)
+│   ├── hardware.py         Device/dtype/context policy (CPU → Blackwell)
+│   ├── airllm_server.py    OpenAI-compatible AirLLM sidecar (port 8002)
+│   ├── json_utils.py       Tolerant JSON extraction (shared with evaluation/)
+│   ├── prompts.py          Step prompts + token budgets (shared with evaluation/)
+│   ├── requirements-local.txt  Optional AirLLM deps
 │   ├── guardrails.py       LLM Guard PHI de-identification
 │   ├── rag_icd10.py        TF-IDF index over 10k HCC-relevant ICD-10 descriptions
 │   ├── hcc_calculator.py   CMS HCC v22 scoring engine (pure Python)
@@ -696,15 +833,22 @@ cms-hcc-chatbot/
 │   └── run_*.py            Eval scripts
 │
 ├── docs/
-│   └── vllm-medgemma.md    MedGemma-on-vLLM serving guide
+│   ├── vllm-medgemma.md    MedGemma-on-vLLM (and Ollama) serving guide
+│   └── airllm.md           Local open-weight models, per-GPU setup
 │
-├── .gitignore              Excludes tfidf_index.pkl, evaluation/results/, venv/, .env
-├── start.bat               Windows one-click launcher
+├── tests/                  Runnable standalone or under pytest
+│   ├── test_hardware.py    GPU-tier policy (Pascal→Blackwell) via a faked torch
+│   └── test_json_utils.py  Tolerant JSON extraction cases
+│
+├── .gitignore              Excludes tfidf_index.pkl, .airllm_shards/, results/, venv/, .env
+├── start.bat               Windows launcher (--airllm also starts the sidecar)
+├── start.sh                Linux/macOS launcher
 └── README.md               This file
 ```
 
 **Not committed (auto-generated at runtime):**
-- `backend/tfidf_index.pkl` — serialised TF-IDF matrix and vectorizer (~80 MB, rebuilt in ~3s if deleted)
+- `backend/tfidf_index.pkl` — serialised TF-IDF matrix and vectorizer (~2.4 MB, rebuilt in ~3s if deleted)
+- `backend/.airllm_shards/` — AirLLM per-layer weights (~1x model size, re-split if deleted)
 - `evaluation/results/` — eval output artifacts
 
 ---
@@ -756,7 +900,13 @@ guidance on incorporating those models (you'll need to add their files to `data/
 
 9. **No authentication.** The API has no built-in auth layer. Do not expose this server to the public internet with real patient data. Run it on `localhost` or behind an authenticated reverse proxy.
 
-10. **Clinical notes may contain PHI.** The built-in [PHI guardrail](#phi-guardrails) de-identifies detected identifiers before any text is sent to an LLM, but detection is not guaranteed to be exhaustive. When using the **Claude** provider, sanitized text is still sent to the Anthropic API — ensure you have appropriate data use agreements. For a fully local path, run **MedGemma** (self-hosted) for all steps so no note data leaves your environment. Always confirm the guardrail reports `available: true` at `/api/status` before submitting real notes.
+10. **Local models are much slower, and AirLLM on CPU is impractical.** AirLLM re-reads the entire model from disk for every token — measured at ~10.4 s/token even for a 0.5B model on a CPU-only laptop, i.e. ~90 minutes for one 512-token answer. Output tokens are therefore capped per hardware tier (512 on CPU, 2048 on CUDA). Use Ollama on CPU; reserve AirLLM for GPUs running models larger than VRAM.
+
+11. **Small open-weight models often fail the JSON steps.** Extraction and code selection require structured JSON. The parser tolerates markdown fences, surrounding prose, bare arrays, and trailing commas, but a small or truncated model still produces unusable output. When that happens the response carries `status: "partial"` and a `parse_failures` entry (surfaced in the UI) instead of silently returning an empty result — code selection falls back to the top 5 TF-IDF candidates.
+
+12. **AirLLM tracks fast-moving libraries.** It declares `transformers>=4.49,<5.13` and reaches into model internals. Verified here against transformers 5.9.0, but if a future upgrade breaks the import, run the sidecar in its own venv (see `backend/requirements-local.txt`) — the app talks to it over HTTP, so nothing else changes.
+
+10. **Clinical notes may contain PHI.** The built-in [PHI guardrail](#phi-guardrails) de-identifies detected identifiers before any text is sent to an LLM, but detection is not guaranteed to be exhaustive. When using the **Claude** provider, sanitized text is still sent to the Anthropic API — ensure you have appropriate data use agreements. For a fully local path, set all three steps to a self-hosted provider (`medgemma`, `airllm`, or `ollama`) so no note data leaves your environment. Always confirm the guardrail reports `available: true` at `/api/status` before submitting real notes.
 
 11. **Python 3.10+ required.** The f-string syntax used in age-variable naming requires Python 3.10 as a minimum. Python 3.13 is verified to work.
 
@@ -797,6 +947,25 @@ If your environment has outbound HTTPS access to HuggingFace, you can restore th
 2. Reinstall `chromadb` and `sentence-transformers` if they were removed from your environment.
 3. On first run the model (~90 MB) downloads and a ChromaDB collection builds (~2–5 minutes).
 
+### Add another model provider
+
+Providers are declared as data in [`backend/llm_providers.py`](backend/llm_providers.py).
+Any OpenAI-compatible server needs no new class — add a `ProviderSpec`:
+
+```python
+PROVIDERS["lmstudio"] = ProviderSpec(
+    name="lmstudio", label="LM Studio (local)", kind="openai_compat", local=True,
+    base_url="http://127.0.0.1:1234/v1", api_key="EMPTY",
+    default_model="my-model",
+    models=(ModelSpec("my-model", "My Model", {"*": "note shown in the dropdown"}),),
+    timeout=900.0, max_retries=1,
+)
+```
+
+It then appears in the sidebar dropdowns, the model catalog, `/api/config`, and the
+eval harness automatically. Only a non-OpenAI wire format needs a new class
+implementing `complete(system, messages, max_tokens, model=None) -> str`.
+
 ### Stream Claude responses
 
 Replace the blocking `claude.messages.create()` calls in `app.py` with `claude.messages.stream()` and return a `StreamingResponse` from FastAPI to show the explanation as it's generated.
@@ -815,6 +984,45 @@ The bundled `data/` folder ships with the repo, so no external data mount is nee
 ---
 
 ## Changelog
+
+### v1.3.0 — 2026-08-08 (local open-weight models, per-step model picker, hardware awareness)
+
+Adds [AirLLM](https://github.com/lyogavin/airllm) and Ollama as providers, and turns
+"which model?" into a runtime choice rather than an env var set at boot.
+
+- **AirLLM sidecar** (`backend/airllm_server.py`) — an OpenAI-compatible server
+  wrapping AirLLM's layer-streaming inference, so a model larger than VRAM can run
+  locally. Runs as a separate process, keeping torch out of the web app and making a
+  CUDA OOM or a library break survivable. Verified against the `openai` SDK.
+- **Ollama as a first-class provider** — the practical local option, especially on CPU.
+- **Per-step model selection** — provider *and* model dropdowns per pipeline step,
+  driven by a catalog from `GET /api/config` that merges curated entries with live
+  endpoint discovery. `/api/chat` accepts `models` and returns `models_used`.
+- **Hardware awareness** (`backend/hardware.py`) — detects CPU / Pascal / Turing /
+  Ampere / Ada / Blackwell / Apple Silicon and derives dtype, context length, token
+  caps, and client timeouts. Catches the "torch wheel has no kernels for your GPU"
+  failure (`sm_120` on new cards, `sm_61` on old ones) at startup with the exact fix,
+  instead of at the first kernel launch. Covered by tests that fake each GPU tier.
+- **Non-blocking LLM calls** — the three steps and the spaCy guardrail now run via
+  `asyncio.to_thread`, so `/api/status` keeps answering during a multi-minute local
+  generation. Local calls are serialized by a semaphore. New `GET /api/local-status`
+  exposes live model-load and token progress.
+- **Failures stop being silent** — a tolerant JSON parser (`backend/json_utils.py`,
+  handles prose, fences, bare arrays, trailing commas) plus `parse_failures` in the
+  response and a UI warning, replacing a fallback that made a broken model look like
+  a clean empty result. The frontend now checks `resp.ok`, so a 502 shows its reason
+  rather than "(no response)".
+- **De-duplication** — prompts and JSON parsing moved to `backend/prompts.py` and
+  `backend/json_utils.py`, shared with `evaluation/` instead of hand-mirrored.
+- **Evaluation** — `--providers` now takes `provider[=model]` specs, and code diffs
+  work for three or more (previously silently skipped for anything but exactly two).
+- **Fixes** — `/api/config` went from 4.5 s to 1.27 s cold / 6 ms warm by probing
+  endpoints concurrently with a TTL cache and defaulting to `127.0.0.1` instead of
+  `localhost` (which costs a 2 s IPv6 timeout per request on Windows); conversation
+  history is now bounded; the provider cache is lock-guarded now that it is reached
+  from worker threads.
+- `start.bat --airllm` / new `start.sh` no longer hard-fail without an Anthropic key,
+  so an all-local setup can start.
 
 ### v1.2.0 — 2026-07-13 (multi-provider, guardrails, evaluation, bundled data)
 

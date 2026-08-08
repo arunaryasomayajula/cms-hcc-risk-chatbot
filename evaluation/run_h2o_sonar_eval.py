@@ -17,7 +17,7 @@ Config:
   (skip with --from-cache to reuse evaluation/results/model_outputs.json).
 
 Usage:
-  python run_h2o_sonar_eval.py [--provider claude] [--from-cache]
+  python run_h2o_sonar_eval.py [--provider claude] [--model MODEL] [--from-cache]
 """
 import os
 import re
@@ -31,7 +31,7 @@ TOXIC_TERMS = {"idiot", "stupid", "hate", "worthless", "kill yourself", "moron"}
 
 # ── 1. Collect model outputs ─────────────────────────────────────────────────
 
-def generate_outputs(provider):
+def generate_outputs(provider, model=None):
     """Run the pipeline over both datasets and collect prompt/response records.
 
     PHI cases are included (with de-identification ON) specifically to test that
@@ -43,6 +43,7 @@ def generate_outputs(provider):
         res = run_pipeline(
             case["note"], case.get("demographics", {}),
             providers={"extract": provider, "select": provider, "explain": provider},
+            models=({"extract": model, "select": model, "explain": model} if model else None),
             deidentify=True,
         )
         # The explanation isn't returned by run_pipeline; re-run explain via a note.
@@ -57,6 +58,7 @@ def generate_outputs(provider):
         res = run_pipeline(
             case["note"], {},
             providers={"extract": provider, "select": provider, "explain": provider},
+            models=({"extract": model, "select": model, "explain": model} if model else None),
             deidentify=True,
         )
         records.append({
@@ -169,6 +171,8 @@ def builtin_evaluators(records):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--provider", default="claude")
+    ap.add_argument("--model", default=None,
+                    help="Model id for the chosen provider (default: the provider's default).")
     ap.add_argument("--from-cache", action="store_true",
                     help="reuse results/model_outputs.json instead of calling the LLM")
     args = ap.parse_args()
@@ -180,8 +184,9 @@ def main():
         records = json.load(open(cache, encoding="utf-8"))
         print(f"  Loaded {len(records)} cached model outputs.")
     else:
-        print(f"  Generating model outputs with provider '{args.provider}'...")
-        records = generate_outputs(args.provider)
+        label = f"{args.provider}={args.model}" if args.model else args.provider
+        print(f"  Generating model outputs with '{label}'...")
+        records = generate_outputs(args.provider, args.model)
         with open(cache, "w", encoding="utf-8") as f:
             json.dump(records, f, indent=2)
         print(f"  Cached outputs to {cache}")

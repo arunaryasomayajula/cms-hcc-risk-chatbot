@@ -1,0 +1,49 @@
+# Optional dependencies for local open-weight inference via the AirLLM sidecar
+# (backend/airllm_server.py). The app does NOT need these — it runs on Claude,
+# vLLM, or Ollama without installing anything here. See docs/airllm.md.
+#
+#   pip install -r backend/requirements-local.txt
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# PRECONDITION: install torch FIRST, matched to your hardware.
+#
+# torch is deliberately NOT listed below. A bare `torch` line lets pip resolve a
+# wheel that may not match your GPU, and can silently replace a working CUDA
+# build with a CPU one.
+#
+#   CPU only                pip install torch --index-url https://download.pytorch.org/whl/cpu
+#   RTX 20/30/40, older     pip install torch --index-url https://download.pytorch.org/whl/cu124
+#   RTX 50 (Blackwell)      pip install torch --index-url https://download.pytorch.org/whl/cu128
+#
+# sm_120 (RTX 50-series) needs torch >= 2.7 built against CUDA 12.8. An older
+# cu12x wheel detects the card fine and then fails at the first kernel launch
+# with "no kernel image is available for execution on the device". The same
+# applies in reverse to GTX 10-series (sm_61), which recent wheels have dropped.
+#
+# Verify before going further — the arch list must contain your card's sm_XX:
+#   python -c "import torch;print(torch.version.cuda, torch.cuda.get_arch_list())"
+#
+# The sidecar checks this for you at startup and prints an actionable warning
+# (see backend/hardware.py), which /api/config surfaces in the UI.
+# ─────────────────────────────────────────────────────────────────────────────
+
+airllm>=3.1.0
+accelerate>=1.0          # AirLLM hard dependency, not installed by default
+
+# Already satisfied by backend/requirements.txt or its transitive deps in most
+# environments: tqdm, safetensors, huggingface-hub, scipy, sentencepiece,
+# fastapi, uvicorn, transformers.
+#
+# transformers: AirLLM declares >=4.49,<5.13. Verified working here against
+# transformers 5.9.0. If `from airllm import AutoModel` ever fails after an
+# upgrade, isolate the sidecar rather than downgrading the app:
+#     python -m venv .venv-airllm
+#     .venv-airllm\Scripts\pip install airllm accelerate "transformers>=4.49,<5.0"
+#     .venv-airllm\Scripts\python backend\airllm_server.py
+# Nothing else needs to change — the app talks to the sidecar over HTTP.
+#
+# bitsandbytes: only needed for AIRLLM_COMPRESSION=4bit|8bit. Requires Turing
+# (sm_75) or newer, has no working Blackwell support, and no usable CPU build.
+# The sidecar detects this and disables compression with an explanation rather
+# than crashing, so install it only if you know your GPU is supported:
+#     pip install bitsandbytes
