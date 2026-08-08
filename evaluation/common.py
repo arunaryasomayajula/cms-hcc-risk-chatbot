@@ -5,8 +5,8 @@ Adds the backend package to sys.path and exposes a compact re-implementation of
 the app.py pipeline so eval scripts can run cases directly against the real RAG
 index, HCC calculator, guardrails, and LLM providers — without a live server.
 
-The prompt text here is kept identical to backend/app.py; if you change the
-prompts there, mirror them here.
+Prompts and JSON parsing are imported from the backend (`prompts`, `json_utils`)
+rather than copied, so the harness cannot silently drift from what the app runs.
 """
 import os
 import sys
@@ -74,36 +74,34 @@ def get_calculator():
 
 # ── Pipeline (mirrors backend/app.py) ────────────────────────────────────────
 
-def _parse_json(text: str) -> dict:
-    import re
-    text = text.strip()
-    fence = re.match(r"^```(?:json)?\s*([\s\S]*?)```\s*$", text, re.IGNORECASE)
-    if fence:
-        text = fence.group(1).strip()
-    return json.loads(text)
-
-
 def run_pipeline(
     note: str,
     demographics: Dict,
     providers: Optional[Dict[str, str]] = None,
+    models: Optional[Dict[str, str]] = None,
     deidentify: bool = False,
 ) -> Dict:
     """Run the full extract → search → select → calculate → explain pipeline.
 
     Returns a dict with the intermediate artifacts plus per-step latency so eval
-    scripts can compare providers. `providers` maps step -> provider name.
+    scripts can compare providers. `providers` maps step -> provider name and
+    `models` maps step -> model id.
     """
     import llm_providers
+    import prompts
     import guardrails as guardrails_mod
+    from json_utils import try_parse_json_object
 
     step_providers = llm_providers.resolve_step_providers(providers)
+    step_models = llm_providers.resolve_step_models(step_providers, models)
     timings: Dict[str, float] = {}
+    parse_failures: List[Dict] = []
 
     def run_step(step, system, messages, max_tokens):
         provider = llm_providers.get_provider(step_providers[step])
         t0 = time.perf_counter()
-        out = provider.complete(system=system, messages=messages, max_tokens=max_tokens)
+        out = provider.complete(system=system, messages=messages,
+                                max_tokens=max_tokens, model=step_models[step])
         timings[step] = round(time.perf_counter() - t0, 3)
         return out
 
@@ -117,20 +115,17 @@ def run_pipeline(
     # Step 2: extract conditions
     extract_text = run_step(
         "extract",
-        system=(
-            "Extract distinct medical diagnoses and conditions from clinical notes. "
-            "Return ONLY a JSON object like: "
-            '{"conditions": [{"condition": "Type 2 diabetes mellitus", '
-            '"search_query": "type 2 diabetes mellitus without complication"}, ...]}'
-            " Include chronic and acute conditions. Be specific."
-        ),
+        system=prompts.EXTRACT_SYSTEM,
         messages=[{"role": "user", "content": text}],
-        max_tokens=800,
+        max_tokens=prompts.MAX_TOKENS["extract"],
     )
-    try:
-        conditions = _parse_json(extract_text).get("conditions", [])
-    except Exception:
+    parsed, err = try_parse_json_object(extract_text, list_key="conditions")
+    if err:
+        parse_failures.append({"step": "extract", "error": err,
+                               "raw_preview": (extract_text or "")[:300]})
         conditions = []
+    else:
+        conditions = parsed.get("conditions", [])
 
     # Step 3: RAG search
     rag = get_rag()
@@ -148,29 +143,21 @@ def run_pipeline(
     if candidates:
         select_text = run_step(
             "select",
-            system=(
-                "You are a certified medical coder. Given clinical notes and ICD-10 "
-                "candidate codes from semantic search, select the most appropriate codes. "
-                "Return ONLY JSON: "
-                '{"selected_codes": [{"icd10": "E119", "description": "...", '
-                '"cc": "19", "condition": "...", "rationale": "...", "confidence": 0.95}]}'
-                " Use the MOST SPECIFIC code supported by the documentation. "
-                "Remove codes that are not supported or are duplicates at a lower specificity."
-            ),
+            system=prompts.SELECT_SYSTEM,
             messages=[{
                 "role": "user",
-                "content": (
-                    f"Clinical notes:\n{text}\n\n"
-                    f"Extracted conditions: {json.dumps(conditions)}\n\n"
-                    f"ICD-10 candidates:\n{json.dumps(candidates[:25], indent=2)}"
-                ),
+                "content": prompts.build_select_user(text, conditions, candidates),
             }],
-            max_tokens=1500,
+            max_tokens=prompts.MAX_TOKENS["select"],
         )
-        try:
-            icd10_results = _parse_json(select_text).get("selected_codes", [])
-        except Exception:
+        parsed, err = try_parse_json_object(select_text, list_key="selected_codes")
+        if err:
+            parse_failures.append({"step": "select", "error": err,
+                                   "raw_preview": (select_text or "")[:300],
+                                   "fallback": "top_5_candidates"})
             icd10_results = candidates[:5]
+        else:
+            icd10_results = parsed.get("selected_codes", [])
 
     # Step 5: HCC calculation
     hcc_result = None
@@ -188,6 +175,8 @@ def run_pipeline(
         "icd10_results": icd10_results,
         "hcc_result": hcc_result,
         "providers_used": step_providers,
+        "models_used": step_models,
+        "parse_failures": parse_failures,
         "timings": timings,
         "guardrail": guardrail_info,
     }

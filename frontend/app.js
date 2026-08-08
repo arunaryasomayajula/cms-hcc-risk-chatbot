@@ -15,9 +15,29 @@ const statusBadge = document.getElementById('statusBadge');
 const extractProvider = document.getElementById('extractProvider');
 const selectProvider  = document.getElementById('selectProvider');
 const explainProvider = document.getElementById('explainProvider');
+const extractModel    = document.getElementById('extractModel');
+const selectModel     = document.getElementById('selectModel');
+const explainModel    = document.getElementById('explainModel');
 const providerNote    = document.getElementById('providerNote');
+const hardwareNote    = document.getElementById('hardwareNote');
 
-const PROVIDER_LABELS = { claude: 'Claude', medgemma: 'MedGemma (vLLM)' };
+/* Fallback only — the server sends a `label` per provider. */
+const PROVIDER_LABELS = {
+  claude: 'Claude',
+  medgemma: 'MedGemma (vLLM)',
+  airllm: 'AirLLM (local)',
+  ollama: 'Ollama (local)',
+};
+
+const STEP_SELECTS = {
+  extract: { prov: extractProvider, model: extractModel },
+  select:  { prov: selectProvider,  model: selectModel  },
+  explain: { prov: explainProvider, model: explainModel },
+};
+
+let PROVIDER_CATALOG = [];
+let MODEL_DEFAULTS = {};
+let HARDWARE = null;
 
 /* ── Sidebar toggle ─────────────────────────────────────────────────────────── */
 sidebarToggle.addEventListener('click', () => {
@@ -50,33 +70,85 @@ pollStatus();
 statusInterval = setInterval(pollStatus, 5000);
 
 /* ── Model provider config ──────────────────────────────────────────────────── */
+function providerByName(name) {
+  return PROVIDER_CATALOG.find(p => p.name === name);
+}
+
+function providerLabel(name) {
+  return providerByName(name)?.label || PROVIDER_LABELS[name] || name;
+}
+
+/* Repopulate a step's model dropdown for whichever provider is selected. */
+function renderModels(step) {
+  const { prov, model } = STEP_SELECTS[step];
+  if (!prov || !model) return;
+  const p = providerByName(prov.value);
+  if (!p) { model.innerHTML = ''; return; }
+
+  const models = p.models || [];
+  model.innerHTML = models.map(m =>
+    `<option value="${escHtml(m.id)}" title="${escHtml(m.note || '')}">${escHtml(m.label || m.id)}</option>`
+  ).join('');
+
+  const wanted = MODEL_DEFAULTS[step];
+  model.value = models.some(m => m.id === wanted)
+    ? wanted
+    : (p.default_model || models[0]?.id || '');
+}
+
+function anyLocalSelected() {
+  return Object.values(STEP_SELECTS)
+    .some(({ prov }) => providerByName(prov?.value)?.local);
+}
+
+function renderNotes(guard) {
+  if (hardwareNote) {
+    if (HARDWARE) {
+      const warnings = (HARDWARE.warnings || [])
+        .map(w => `<span class="hw-warning">⚠ ${escHtml(w)}</span>`).join('');
+      hardwareNote.innerHTML =
+        `<span class="hw-line">Local inference: ${escHtml(HARDWARE.summary || '')}</span>${warnings}`;
+    } else {
+      hardwareNote.innerHTML = '';
+    }
+  }
+
+  if (!providerNote) return;
+  const lines = PROVIDER_CATALOG.map(p => {
+    if (!p.local) return '';
+    const dot = p.reachable ? '🟢' : '⚪';
+    const state = p.reachable ? escHtml(p.base_url) : 'not running';
+    return `<span class="prov-line"><span class="prov-dot">${dot}</span> ${escHtml(p.label)} — ${state}</span>`;
+  }).filter(Boolean).join('');
+
+  const guardMsg = guard?.available
+    ? 'PHI guardrail: on.'
+    : `PHI guardrail: off (${escHtml(guard?.error || 'unavailable')}).`;
+  providerNote.innerHTML = `${lines}<span class="prov-line">${guardMsg}</span>`;
+}
+
 async function loadConfig() {
   try {
     const r = await fetch('/api/config');
     const d = await r.json();
-    const p = d.providers || {};
-    const available = p.available_providers || ['claude'];
-    const defaults  = p.step_defaults || {};
-    const selects = {
-      extract: extractProvider,
-      select:  selectProvider,
-      explain: explainProvider,
-    };
-    for (const [step, sel] of Object.entries(selects)) {
-      if (!sel) continue;
-      sel.innerHTML = available.map(name =>
-        `<option value="${name}">${PROVIDER_LABELS[name] || name}</option>`
+
+    PROVIDER_CATALOG = d.providers || [];
+    MODEL_DEFAULTS = d.model_defaults || {};
+    HARDWARE = d.hardware || null;
+    const defaults = d.step_defaults || {};
+
+    for (const [step, { prov }] of Object.entries(STEP_SELECTS)) {
+      if (!prov) continue;
+      prov.innerHTML = PROVIDER_CATALOG.map(p =>
+        `<option value="${escHtml(p.name)}" title="${escHtml(p.note || '')}">${escHtml(p.label)}</option>`
       ).join('');
-      sel.value = defaults[step] || available[0];
+      prov.value = defaults[step] || PROVIDER_CATALOG[0]?.name || 'claude';
+      renderModels(step);
+      // Cascade: switching provider must rebuild that step's model list.
+      prov.addEventListener('change', () => renderModels(step));
     }
-    const reach = p.vllm_reachable
-      ? `MedGemma reachable at ${escHtml(p.vllm_base_url || '')} (${escHtml(p.vllm_model || '')}).`
-      : `MedGemma endpoint not reachable — start vLLM to use it.`;
-    const guard = d.guardrails || {};
-    const guardMsg = guard.available
-      ? 'PHI guardrail: on.'
-      : `PHI guardrail: off (${escHtml(guard.error || 'unavailable')}).`;
-    if (providerNote) providerNote.innerHTML = `${reach}<br>${guardMsg}`;
+
+    renderNotes(d.guardrails);
   } catch (_) {
     if (providerNote) providerNote.textContent = 'Could not load model config.';
   }
@@ -88,6 +160,14 @@ function getProviders() {
     extract: extractProvider?.value || 'claude',
     select:  selectProvider?.value  || 'claude',
     explain: explainProvider?.value || 'claude',
+  };
+}
+
+function getModels() {
+  return {
+    extract: extractModel?.value || '',
+    select:  selectModel?.value  || '',
+    explain: explainModel?.value || '',
   };
 }
 
@@ -118,18 +198,87 @@ function addUserMessage(text) {
   scrollBottom();
 }
 
+let localTimer = null;
+let localPoll = null;
+let activeController = null;
+
 function addTyping() {
   const div = document.createElement('div');
   div.className = 'message bot';
   div.id = 'typing';
-  div.innerHTML = `<div class="avatar">🏥</div>
-    <div class="bubble"><div class="typing"><div class="dot"></div><div class="dot"></div><div class="dot"></div></div></div>`;
+
+  const dots = `<div class="typing"><div class="dot"></div><div class="dot"></div><div class="dot"></div></div>`;
+  const local = anyLocalSelected();
+  const slow = local && HARDWARE && HARDWARE.tier === 'cpu';
+
+  let progress = '';
+  if (local) {
+    // A local run can take minutes with no output at all; without a ticking
+    // clock and a progress readout it is indistinguishable from a hung server.
+    const warn = slow
+      ? 'Running locally on CPU — this can take several minutes.'
+      : 'Running locally.';
+    progress = `<div class="local-progress">
+        <span id="localMsg">${warn}</span>
+        <span class="elapsed" id="localElapsed">0:00</span>
+        <button class="local-cancel" id="localCancel" type="button">Stop waiting</button>
+        <div id="localDetail"></div>
+      </div>`;
+  }
+
+  div.innerHTML = `<div class="avatar">🏥</div><div class="bubble">${dots}${progress}</div>`;
   messages.appendChild(div);
   scrollBottom();
+
+  if (local) startLocalProgress();
   return div;
 }
 
+function startLocalProgress() {
+  const started = Date.now();
+  const elapsedEl = document.getElementById('localElapsed');
+  const detailEl = document.getElementById('localDetail');
+
+  localTimer = setInterval(() => {
+    const s = Math.floor((Date.now() - started) / 1000);
+    if (elapsedEl) elapsedEl.textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+  }, 1000);
+
+  const poll = async () => {
+    try {
+      const r = await fetch('/api/local-status');
+      const d = await r.json();
+      const h = d.airllm;
+      if (!h || !detailEl) return;
+      if (h.state === 'loading' || h.state === 'splitting') {
+        const total = h.layers_total || 0;
+        const done = h.layers_split || 0;
+        detailEl.textContent = total
+          ? `Loading ${h.model || ''} — layer ${done}/${total}`
+          : `Loading ${h.model || ''}…`;
+      } else if (h.state === 'generating') {
+        detailEl.textContent = `Generating — ${h.tokens_generated || 0}/${h.tokens_requested || 0} tokens`;
+      } else {
+        detailEl.textContent = '';
+      }
+    } catch (_) { /* sidecar may not be the active provider */ }
+  };
+  poll();
+  localPoll = setInterval(poll, 5000);
+
+  document.getElementById('localCancel')?.addEventListener('click', () => {
+    // Stops us waiting; the sidecar keeps generating (it has no cancel API).
+    activeController?.abort();
+  });
+}
+
+function stopLocalProgress() {
+  if (localTimer) { clearInterval(localTimer); localTimer = null; }
+  if (localPoll) { clearInterval(localPoll); localPoll = null; }
+}
+
 function removeTyping() {
+  stopLocalProgress();
   document.getElementById('typing')?.remove();
 }
 
@@ -141,20 +290,35 @@ function buildGuardrailBanner(guardrail) {
   return `<div class="phi-banner">🔒 PHI de-identified before analysis: ${items}</div>`;
 }
 
-function buildProvidersCaption(providersUsed) {
+function buildProvidersCaption(providersUsed, modelsUsed) {
   if (!providersUsed) return '';
-  const label = s => PROVIDER_LABELS[s] || s;
-  return `<div class="providers-caption">Models · extract: ${escHtml(label(providersUsed.extract))}`
-    + ` · select: ${escHtml(label(providersUsed.select))}`
-    + ` · explain: ${escHtml(label(providersUsed.explain))}</div>`;
+  const part = step => {
+    const prov = escHtml(providerLabel(providersUsed[step]));
+    const model = modelsUsed?.[step];
+    return model ? `${prov} <span class="model-name">· ${escHtml(model)}</span>` : prov;
+  };
+  return `<div class="providers-caption">extract: ${part('extract')}`
+    + ` &nbsp;|&nbsp; select: ${part('select')}`
+    + ` &nbsp;|&nbsp; explain: ${part('explain')}</div>`;
 }
 
-function addBotMessage(text, icd10Codes, hccResult, conditionsFound, guardrail, providersUsed) {
+function buildParseWarning(parseFailures) {
+  if (!parseFailures || !parseFailures.length) return '';
+  const steps = parseFailures.map(f => escHtml(f.step)).join(', ');
+  const fellBack = parseFailures.some(f => f.fallback);
+  return `<div class="parse-warning">⚠ The selected model did not return valid JSON for: ${steps}.`
+    + (fellBack ? ' Showing top search matches instead of model-selected codes.' : '')
+    + ` Try a larger model.</div>`;
+}
+
+function addBotMessage(text, icd10Codes, hccResult, conditionsFound, guardrail,
+                       providersUsed, modelsUsed, parseFailures) {
   const div = document.createElement('div');
   div.className = 'message bot';
 
   let inner = `<div class="avatar">🏥</div><div class="bubble">`;
   inner += buildGuardrailBanner(guardrail);
+  inner += buildParseWarning(parseFailures);
   inner += `<div>${markdownToHtml(text)}</div>`;
 
   // Result cards
@@ -177,7 +341,7 @@ function addBotMessage(text, icd10Codes, hccResult, conditionsFound, guardrail, 
     inner += `</div>`;
   }
 
-  inner += buildProvidersCaption(providersUsed);
+  inner += buildProvidersCaption(providersUsed, modelsUsed);
   inner += `</div>`;
   div.innerHTML = inner;
   messages.appendChild(div);
@@ -308,17 +472,38 @@ async function send() {
   addUserMessage(text);
   const typingEl = addTyping();
 
+  // No timeout: a local model can legitimately take minutes. The controller
+  // exists so the user can stop waiting via the Cancel button.
+  activeController = new AbortController();
+
   try {
     const resp = await fetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      signal: activeController.signal,
       body: JSON.stringify({
         message: text,
         demographics: getDemographics(),
         conversation_history: conversationHistory,
         providers: getProviders(),
+        models: getModels(),
       }),
     });
+
+    // Without this a 502 fell through to `data.response || '(no response)'`,
+    // hiding the provider error entirely.
+    if (!resp.ok) {
+      let detail = `HTTP ${resp.status}`;
+      try {
+        const e = await resp.json();
+        detail = e.detail || e.error?.message || detail;
+      } catch (_) { /* non-JSON error body */ }
+      removeTyping();
+      addBotMessage(`⚠️ ${detail}`, [], null, [], null, null, null, null);
+      sendBtn.disabled = !systemReady;
+      activeController = null;
+      return;
+    }
 
     const data = await resp.json();
     removeTyping();
@@ -331,12 +516,20 @@ async function send() {
       data.conditions_found || [],
       data.guardrail || null,
       data.providers_used || null,
+      data.models_used || null,
+      data.parse_failures || null,
     );
   } catch (err) {
     removeTyping();
-    addBotMessage(`⚠️ Error: ${err.message}. Make sure the backend is running.`, [], null, []);
+    if (err.name === 'AbortError') {
+      addBotMessage('Stopped waiting. The local model may still be generating in the background —'
+        + ' check the sidecar console.', [], null, []);
+    } else {
+      addBotMessage(`⚠️ Error: ${err.message}. Make sure the backend is running.`, [], null, []);
+    }
   }
 
+  activeController = null;
   sendBtn.disabled = !systemReady;
 }
 

@@ -21,7 +21,7 @@ HCC calculator load with no extra setup (override with `CMS_DATA_PATH` if needed
 | Script | What it measures | Needs LLM API? |
 |---|---|---|
 | `run_rag_eval.py` | ICD-10 retrieval quality: `recall@k`, `MRR`, pool precision vs the gold codes | No |
-| `run_provider_comparison.py` | Claude vs MedGemma: ICD-10 code F1, HCC set, risk score, per-step latency | Yes (both providers) |
+| `run_provider_comparison.py` | Any providers/models: ICD-10 code F1, HCC set, risk score, per-step latency | Yes (both providers) |
 | `run_guardrail_eval.py` | PHI detection precision/recall + that clinical terms survive de-identification | No (local LLM Guard) |
 | `run_h2o_sonar_eval.py` | PII leakage, toxicity, fairness/bias over model outputs (H2O sonar, with fallback) | Only when generating fresh outputs |
 
@@ -37,7 +37,7 @@ python run_rag_eval.py --k 6 10
 python run_guardrail_eval.py
 
 # 3. Provider comparison (needs ANTHROPIC_API_KEY and a running vLLM/MedGemma)
-python run_provider_comparison.py --providers claude medgemma
+python run_provider_comparison.py --providers claude ollama=qwen2.5:7b-instruct
 
 # 4. H2O sonar LLM evaluators (PII leakage / toxicity / bias)
 python run_h2o_sonar_eval.py --provider claude

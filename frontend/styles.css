@@ -117,11 +117,38 @@ body {
 
 .field-label input[type="checkbox"] { accent-color: var(--sidebar-accent); width: 15px; height: 15px; }
 
+/* Model select sits directly under its provider select, visually subordinate. */
+.field-label select.model-select {
+  margin-top: 5px;
+  font-size: 0.78rem;
+  padding: 5px 9px;
+  color: #cbd5e1;
+}
+
 .sidebar-note {
   font-size: 0.75rem;
   color: #64748b;
   line-height: 1.4;
   padding-top: 4px;
+}
+.sidebar-note .prov-line { display: block; }
+.sidebar-note .prov-dot { font-size: 0.7rem; }
+
+.hw-line {
+  color: #94a3b8;
+  font-weight: 600;
+}
+/* Actionable setup problems (wrong CUDA wheel, refused compression) must not
+   read as ordinary grey helper text. */
+.hw-warning {
+  display: block;
+  margin-top: 5px;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  background: rgba(245, 158, 11, .12);
+  border: 1px solid rgba(245, 158, 11, .35);
+  color: #fbbf24;
+  line-height: 1.35;
 }
 
 .status-badge {
@@ -407,6 +434,20 @@ body {
   font-weight: 600;
 }
 
+/* A model that could not return parseable JSON degrades the result silently
+   otherwise — this makes that visible in the transcript. */
+.parse-warning {
+  display: block;
+  margin-bottom: 8px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: #ffedd5;
+  color: #9a3412;
+  border: 1px solid #fed7aa;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
 /* ── Providers-used caption ────────────────────────────────────────────────── */
 .providers-caption {
   margin-top: 8px;
@@ -415,6 +456,28 @@ body {
   border-top: 1px solid #f1f5f9;
   padding-top: 6px;
 }
+.providers-caption .model-name { color: #64748b; }
+
+/* ── Local-inference progress (in the typing bubble) ───────────────────────── */
+.local-progress {
+  margin-top: 6px;
+  font-size: 0.75rem;
+  color: #64748b;
+  line-height: 1.5;
+}
+.local-progress .elapsed { font-variant-numeric: tabular-nums; font-weight: 600; }
+.local-cancel {
+  margin-left: 8px;
+  font-size: 0.7rem;
+  padding: 2px 8px;
+  border-radius: 6px;
+  border: 1px solid #cbd5e1;
+  background: #fff;
+  color: #475569;
+  cursor: pointer;
+  font-family: var(--font);
+}
+.local-cancel:hover { background: #f1f5f9; }
 
 /* ── Responsive ────────────────────────────────────────────────────────────── */
 @media (max-width: 700px) {
