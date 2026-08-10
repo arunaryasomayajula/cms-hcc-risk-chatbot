@@ -14,19 +14,20 @@ A web-based, AI-powered chatbot that accepts patient clinical notes, maps descri
 4. [CMS HCC Model Primer](#cms-hcc-model-primer)
 5. [Model Providers (Claude / vLLM / AirLLM / Ollama)](#model-providers-claude--vllm--airllm--ollama)
 6. [PHI Guardrails](#phi-guardrails)
-7. [Evaluation](#evaluation)
-8. [Prerequisites](#prerequisites)
-9. [Installation](#installation)
-10. [Configuration](#configuration)
-11. [Running the App](#running-the-app)
-12. [Using the Chatbot](#using-the-chatbot)
-13. [API Reference](#api-reference)
-14. [Project Structure](#project-structure)
-15. [CMS Data Files Referenced](#cms-data-files-referenced)
-16. [Caveats and Limitations](#caveats-and-limitations)
-17. [Extending the App](#extending-the-app)
-18. [Changelog](#changelog)
-19. [References](#references)
+7. [Tracing](#tracing)
+8. [Evaluation](#evaluation)
+9. [Prerequisites](#prerequisites)
+10. [Installation](#installation)
+11. [Configuration](#configuration)
+12. [Running the App](#running-the-app)
+13. [Using the Chatbot](#using-the-chatbot)
+14. [API Reference](#api-reference)
+15. [Project Structure](#project-structure)
+16. [CMS Data Files Referenced](#cms-data-files-referenced)
+17. [Caveats and Limitations](#caveats-and-limitations)
+18. [Extending the App](#extending-the-app)
+19. [Changelog](#changelog)
+20. [References](#references)
 
 ---
 
@@ -346,6 +347,42 @@ the sanitized text. See [`backend/guardrails.py`](backend/guardrails.py).
 
 ---
 
+## Tracing
+
+Every `/api/chat` request can be captured as a **LangSmith run tree** and written as
+**one JSON file per trace** into a folder you specify.
+
+```bash
+export LANGSMITH_TRACING=1
+export LANGSMITH_TRACE_DIR=/var/log/cms-hcc-traces
+```
+
+Files are named `<UTC timestamp>__<trace uuid>.json` — the UUID makes them unique, the
+timestamp makes the folder sort chronologically. Each trace holds a root `chat` span
+with children for the guardrail, each LLM call, the TF-IDF search, and the HCC
+calculation, every one carrying its own `latency_ms`, inputs, outputs, and the
+provider/model that served it.
+
+**The note recorded in a trace is the de-identified one.** A trace is the
+highest-fidelity record of what went through the pipeline, so capturing raw text would
+quietly undo the [PHI guardrail](#phi-guardrails). Raw capture requires an explicit
+`LANGSMITH_TRACE_RAW_INPUT=1` and logs a warning at startup. Nothing is sent off the
+machine unless you also set `LANGSMITH_TRACE_UPLOAD=1` with a `LANGSMITH_API_KEY`.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `LANGSMITH_TRACING` | `0` | Master on/off switch |
+| `LANGSMITH_TRACE_DIR` | `backend/traces` | Output folder |
+| `LANGSMITH_PROJECT` | `cms-hcc-chatbot` | Recorded in each trace |
+| `LANGSMITH_TRACE_RAW_INPUT` | `0` | Capture the pre-guardrail note (PHI) |
+| `LANGSMITH_TRACE_MAX_FIELD` | `20000` | Truncate any single string field |
+| `LANGSMITH_TRACE_UPLOAD` | `0` | Also send to the LangSmith cloud |
+
+`GET /api/status` reports tracing state. Full guide, file schema, and `jq` recipes:
+[`docs/tracing.md`](docs/tracing.md).
+
+---
+
 ## Evaluation
 
 A standalone harness in [`evaluation/`](evaluation/) (separate `requirements.txt`)
@@ -451,6 +488,7 @@ Dependencies installed:
 | `uvicorn[standard]` | ASGI server |
 | `anthropic` | Official Anthropic Python SDK (Claude API) |
 | `openai` | Client for every OpenAI-compatible provider (vLLM, AirLLM sidecar, Ollama) |
+| `langsmith` | Run-tree tracing, written to local JSON (opt-in) |
 | `llm-guard` | PHI/PII de-identification (Anonymize scanner + Vault) |
 | `scikit-learn` | TF-IDF vectorizer and cosine similarity for ICD-10 search |
 | `pandas` | Loading and processing CMS reference CSVs |
@@ -813,6 +851,7 @@ cms-hcc-chatbot/
 │   ├── airllm_server.py    OpenAI-compatible AirLLM sidecar (port 8002)
 │   ├── json_utils.py       Tolerant JSON extraction (shared with evaluation/)
 │   ├── prompts.py          Step prompts + token budgets (shared with evaluation/)
+│   ├── tracing.py          LangSmith run trees -> one JSON file per trace
 │   ├── requirements-local.txt  Optional AirLLM deps
 │   ├── guardrails.py       LLM Guard PHI de-identification
 │   ├── rag_icd10.py        TF-IDF index over 10k HCC-relevant ICD-10 descriptions
@@ -834,7 +873,8 @@ cms-hcc-chatbot/
 │
 ├── docs/
 │   ├── vllm-medgemma.md    MedGemma-on-vLLM (and Ollama) serving guide
-│   └── airllm.md           Local open-weight models, per-GPU setup
+│   ├── airllm.md           Local open-weight models, per-GPU setup
+│   └── tracing.md          LangSmith trace capture and the PHI defaults
 │
 ├── tests/                  Runnable standalone or under pytest
 │   ├── test_hardware.py    GPU-tier policy (Pascal→Blackwell) via a faked torch
@@ -850,6 +890,7 @@ cms-hcc-chatbot/
 - `backend/tfidf_index.pkl` — serialised TF-IDF matrix and vectorizer (~2.4 MB, rebuilt in ~3s if deleted)
 - `backend/.airllm_shards/` — AirLLM per-layer weights (~1x model size, re-split if deleted)
 - `evaluation/results/` — eval output artifacts
+- `backend/traces/` — LangSmith trace JSON (sensitive; gitignored)
 
 ---
 
@@ -1021,6 +1062,10 @@ Adds [AirLLM](https://github.com/lyogavin/airllm) and Ollama as providers, and t
   `localhost` (which costs a 2 s IPv6 timeout per request on Windows); conversation
   history is now bounded; the provider cache is lock-guarded now that it is reached
   from worker threads.
+- **LangSmith tracing** (`backend/tracing.py`) — each request becomes a run tree
+  written as one JSON file per trace into a configurable folder, with per-span
+  latency. Records the de-identified note by default and stays on-disk unless
+  upload is explicitly enabled.
 - `start.bat --airllm` / new `start.sh` no longer hard-fail without an Anthropic key,
   so an all-local setup can start.
 
