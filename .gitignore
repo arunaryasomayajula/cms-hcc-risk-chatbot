@@ -25,6 +25,10 @@ backend/.airllm_shards/
 # Optional isolated venv for the AirLLM sidecar (see backend/requirements-local.txt)
 .venv-airllm/
 
+# LangSmith traces (contain clinical text - treat as sensitive)
+backend/traces/
+traces/
+
 # Evaluation outputs
 evaluation/results/
 

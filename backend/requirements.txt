@@ -2,6 +2,7 @@ fastapi
 uvicorn[standard]
 anthropic
 openai
+langsmith
 llm-guard
 chromadb
 sentence-transformers
