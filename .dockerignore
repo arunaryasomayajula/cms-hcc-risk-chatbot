@@ -1,0 +1,36 @@
+# Only backend/, data/ and frontend/ are needed in the image.
+.git
+.gitignore
+.claude
+.venv*
+venv/
+env/
+**/__pycache__
+**/*.py[cod]
+
+# Not part of the runtime
+evaluation/
+docs/
+tests/
+README.md
+start.bat
+start.sh
+docker-compose.yml
+Dockerfile
+
+# Local-model sidecar (torch) — kept out of the app image
+backend/airllm_server.py
+backend/requirements-local.txt
+backend/.airllm_shards/
+.airllm_shards/
+
+# Generated at build time / runtime, or sensitive
+backend/tfidf_index.pkl
+backend/chroma_db/
+backend/traces/
+traces/
+backend/logs/
+*.log
+.env
+.env.*
+*.env

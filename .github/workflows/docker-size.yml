@@ -1,0 +1,34 @@
+# Builds the app image and fails if it grows past the 1 GB budget (docs/docker.md).
+name: docker-size
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      MAX_BYTES: 1000000000
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t cms-hcc-chatbot .
+
+      - name: Enforce size budget
+        run: |
+          size=$(docker image inspect cms-hcc-chatbot --format '{{.Size}}')
+          echo "Image size: $((size / 1000000)) MB (limit $((MAX_BYTES / 1000000)) MB)"
+          [ "$size" -le "$MAX_BYTES" ]
+
+      - name: Smoke test
+        run: |
+          docker run -d --name app -p 8000:8000 cms-hcc-chatbot
+          for i in $(seq 1 30); do
+            curl -sf localhost:8000/api/status | grep -q '"initialized":true' && break
+            sleep 2
+          done
+          curl -sf localhost:8000/api/status | tee /dev/stderr \
+            | grep -q '"available":true'

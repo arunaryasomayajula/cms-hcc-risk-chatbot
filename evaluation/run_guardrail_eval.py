@@ -7,7 +7,7 @@ Runs `backend/guardrails.deidentify` over labeled PHI cases and measures:
 - clinical-term survival        : the diagnoses/terms in `must_survive` must still
   be present verbatim in the sanitized text (no over-redaction of clinical content).
 
-No API key required — the guardrail runs entirely locally (LLM Guard + spaCy).
+No API key required — the guardrail runs entirely locally (Presidio + spaCy).
 
 Usage:  python run_guardrail_eval.py
 """
@@ -24,7 +24,7 @@ def evaluate(dataset_path):
     status = guardrails_mod.status()
     if not status.get("available"):
         print(f"  ! Guardrail unavailable: {status.get('error')}")
-        print("    Install llm-guard and run: python -m spacy download en_core_web_lg")
+        print("    pip install -r backend/requirements.txt  (presidio-analyzer + en_core_web_sm)")
         return None, status
 
     cases = load_jsonl(dataset_path)

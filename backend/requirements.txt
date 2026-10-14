@@ -1,12 +1,17 @@
+# App runtime. Kept torch-free so the Docker image stays under 1 GB — see
+# docs/docker.md. The Docker build installs the pinned requirements.lock; regenerate it with
+#   uv pip compile backend/requirements.txt -o backend/requirements.lock \
+#     --python-version 3.12 --python-platform x86_64-unknown-linux-gnu
 fastapi
 uvicorn[standard]
 anthropic
-openai
+openai          # Ollama / vLLM / AirLLM providers (OpenAI-compatible); small, lazy-imported
 langsmith
-llm-guard
-chromadb
-sentence-transformers
 pandas
-python-multipart
 numpy
-openpyxl
+scikit-learn    # TF-IDF ICD-10 index (rag_icd10.py)
+
+# PHI guardrail: Presidio + a small spaCy model (replaces llm-guard, which
+# pulled in torch + transformers + a DeBERTa NER model).
+presidio-analyzer
+en_core_web_sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl

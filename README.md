@@ -36,7 +36,7 @@ A web-based, AI-powered chatbot that accepts patient clinical notes, maps descri
 | Capability | Detail |
 |---|---|
 | **Clinical NLP** | Extracts discrete diagnoses and conditions from free-text clinical notes using an LLM (Claude, or a self-hosted open-weight model) |
-| **PHI guardrail** | De-identifies names, dates, MRNs, SSNs, etc. (LLM Guard) before any text reaches an LLM |
+| **PHI guardrail** | De-identifies names, dates, MRNs, SSNs, etc. (Microsoft Presidio + spaCy) before any text reaches an LLM |
 | **Pluggable models** | Each pipeline step independently picks a **provider and a model** at request time: Claude, vLLM, AirLLM (local, layer-streamed), or Ollama |
 | **Runs on your hardware** | Local inference auto-detects CPU / GTX 10-series / RTX 20-50 / Blackwell / Apple Silicon and adapts dtype, context, and token caps |
 | **ICD-10 RAG search** | Searches ~10 k HCC-relevant ICD-10-CM codes using a local TF-IDF index (sklearn) — no internet or model download required |
@@ -64,7 +64,7 @@ A web-based, AI-powered chatbot that accepts patient clinical notes, maps descri
 ┌─────────────────────────────────────────────────────────────────┐
 │                      FastAPI backend (Python)                     │
 │                                                                   │
-│  Guard   LLM Guard ──► de-identify PHI in the note (Anonymize)   │
+│  Guard   Presidio  ──► de-identify PHI in the note (+ spaCy NER) │
 │                                                                   │
 │  Step 1  LLM (any provider) ──► Extract conditions (JSON)        │
 │                                                                   │
@@ -268,7 +268,7 @@ Selection is **per pipeline step**, from the sidebar's provider + model dropdown
 | `LLM_PROVIDER_SELECT`  | `claude` | ” |
 | `LLM_PROVIDER_EXPLAIN` | `claude` | ” |
 | `LLM_MODEL_EXTRACT` / `_SELECT` / `_EXPLAIN` | provider default | Model id for that step |
-| `CLAUDE_MODEL` | `claude-sonnet-4-6` | Anthropic model id |
+| `CLAUDE_MODEL` | `claude-sonnet-5-5` | Anthropic model id |
 | `VLLM_BASE_URL` / `VLLM_MODEL` / `VLLM_API_KEY` | `http://127.0.0.1:8001/v1` · `google/medgemma-27b-it` · `EMPTY` | vLLM endpoint |
 | `AIRLLM_BASE_URL` / `AIRLLM_MODEL` | `http://127.0.0.1:8002/v1` · `Qwen/Qwen2.5-0.5B-Instruct` | AirLLM sidecar |
 | `OLLAMA_BASE_URL` / `OLLAMA_MODEL` | `http://127.0.0.1:11434/v1` · `qwen2.5:7b-instruct` | Ollama endpoint |
@@ -315,35 +315,33 @@ and prints the exact `pip install` line to fix it; the UI shows the same warning
 ## PHI Guardrails
 
 Before any clinical note is sent to an LLM (Claude, vLLM, AirLLM, or Ollama), it is scanned
-by **LLM Guard**'s `Anonymize` scanner. Detected PHI/PII — names, dates, phone
-numbers, emails, SSNs, medical-record numbers, locations — is **de-identified**
-(replaced with placeholders like `[REDACTED_PERSON_1]`) and the pipeline proceeds on
-the sanitized text. See [`backend/guardrails.py`](backend/guardrails.py).
+by **Microsoft Presidio**'s `AnalyzerEngine` (regex/checksum recognizers + spaCy
+`en_core_web_sm` NER). Detected PHI/PII — names, dates, phone numbers, emails, SSNs,
+medical-record numbers, locations — is **de-identified** (replaced with placeholders
+like `[REDACTED_PERSON_1]`) and the pipeline proceeds on the sanitized text. See
+[`backend/guardrails.py`](backend/guardrails.py).
 
 - **De-identify, don't block** — clinical content (diagnoses, labs, meds) is kept.
-- **No re-identification** — the placeholder→value map (Vault) never leaves the
-  process and is discarded after each request, so PHI never enters the model output
-  or stored conversation history.
+- **No re-identification** — the placeholder→value map exists only inside one
+  `deidentify()` call, so PHI never enters the model output or stored conversation
+  history.
+- **Labelled identifiers always win** — a value after an `MRN` / `SSN` label is
+  redacted with top confidence, even if spaCy mislabels it (e.g. an MRN as a date).
 - **Only types are surfaced** — the `/api/chat` response returns a `guardrail` block
   with entity *types* and counts (never raw values); the UI shows a "🔒 PHI
   de-identified" banner.
-- **Graceful fallback** — if `llm-guard` or its spaCy model isn't installed, the app
-  still boots and `/api/status` reports the guardrail as off.
+- **Graceful fallback** — if `presidio-analyzer` or its spaCy model isn't installed,
+  the app still boots and `/api/status` reports the guardrail as off.
 
 | Variable | Default | Purpose |
 |---|---|---|
 | `GUARDRAILS_ENABLED` | `true` | set `false` to disable de-identification |
+| `GUARDRAILS_SPACY_MODEL` | `en_core_web_sm` | spaCy NER model (install it first; `en_core_web_md` is a middle ground, `_lg` adds ~560 MB) |
+| `GUARDRAILS_SCORE_THRESHOLD` | `0.35` | minimum Presidio confidence to redact |
 
-> After installing `llm-guard`, download the spaCy model it relies on:
-> `python -m spacy download en_core_web_lg`
->
-> **Platform note:** `llm-guard` pulls native packages (`spacy`, `thinc`, `blis`,
-> `sentencepiece`). On Linux/macOS these install from wheels cleanly. On **Windows +
-> Python 3.13** some versions have no prebuilt wheel and need a C++ toolchain; if pip
-> tries to compile, force wheels with
-> `pip install llm-guard "spacy>=3.8" --only-binary=:all:`, or use a Python 3.11/3.12
-> environment. The guardrail code in `backend/guardrails.py` is compatible with both
-> the modern (0.3.x) and legacy (0.0.x) `llm-guard` scan APIs.
+> Earlier versions used LLM Guard's `Anonymize` scanner, which wraps the same Presidio
+> analyzer but hard-depends on torch + transformers. Dropping it is what lets the
+> Docker image fit in under 1 GB — see [`docs/docker.md`](docs/docker.md).
 
 ---
 
@@ -489,14 +487,24 @@ Dependencies installed:
 | `anthropic` | Official Anthropic Python SDK (Claude API) |
 | `openai` | Client for every OpenAI-compatible provider (vLLM, AirLLM sidecar, Ollama) |
 | `langsmith` | Run-tree tracing, written to local JSON (opt-in) |
-| `llm-guard` | PHI/PII de-identification (Anonymize scanner + Vault) |
+| `presidio-analyzer` + `en_core_web_sm` | PHI/PII de-identification (Presidio recognizers + spaCy NER) |
 | `scikit-learn` | TF-IDF vectorizer and cosine similarity for ICD-10 search |
 | `pandas` | Loading and processing CMS reference CSVs |
 | `numpy` | Array operations for similarity ranking |
-| `python-multipart` | FastAPI form support |
-| `openpyxl` | Reading `.xlsx` files if needed |
 
-> **Note:** `chromadb` and `sentence-transformers` are listed in `requirements.txt` for completeness but are not used at runtime. The active search engine is sklearn's `TfidfVectorizer` — fully local, no model download, no internet required at startup.
+> **Note:** the runtime is deliberately torch-free. `chromadb`, `sentence-transformers`,
+> `llm-guard`, `openpyxl` and `python-multipart` were removed (unused, or replaced) to
+> keep the Docker image under 1 GB. `backend/requirements.lock` pins the exact Linux
+> versions the image installs.
+
+#### Docker (recommended)
+
+```bash
+docker compose up --build        # needs ANTHROPIC_API_KEY in the shell or .env
+```
+
+One self-contained image (~610 MB on disk, ~185 MB download) running every
+pipeline step on Claude. See [`docs/docker.md`](docs/docker.md).
 
 #### Optional — local open-weight models (AirLLM)
 
@@ -752,7 +760,7 @@ Main endpoint. Accepts clinical notes and demographics; returns ICD-10 codes, HC
   "providers": {"extract": "airllm", "select": "ollama", "explain": "claude"},
   "models":    {"extract": "Qwen/Qwen2.5-7B-Instruct",
                 "select":  "qwen2.5:7b-instruct",
-                "explain": "claude-sonnet-4-6"}
+                "explain": "claude-sonnet-5-5"}
 }
 ```
 
@@ -779,7 +787,7 @@ warning rather than failing the request.
   "status": "success",
   "providers_used": {"extract": "airllm", "select": "ollama", "explain": "claude"},
   "models_used":    {"extract": "Qwen/Qwen2.5-7B-Instruct",
-                     "select": "qwen2.5:7b-instruct", "explain": "claude-sonnet-4-6"},
+                     "select": "qwen2.5:7b-instruct", "explain": "claude-sonnet-5-5"},
   "parse_failures": [],
   "conditions_found": [
     {"condition": "Type 2 diabetes with CKD stage 4",
@@ -853,7 +861,7 @@ cms-hcc-chatbot/
 │   ├── prompts.py          Step prompts + token budgets (shared with evaluation/)
 │   ├── tracing.py          LangSmith run trees -> one JSON file per trace
 │   ├── requirements-local.txt  Optional AirLLM deps
-│   ├── guardrails.py       LLM Guard PHI de-identification
+│   ├── guardrails.py       Presidio PHI de-identification
 │   ├── rag_icd10.py        TF-IDF index over 10k HCC-relevant ICD-10 descriptions
 │   ├── hcc_calculator.py   CMS HCC v22 scoring engine (pure Python)
 │   └── requirements.txt    Python dependencies
@@ -1025,6 +1033,27 @@ The bundled `data/` folder ships with the repo, so no external data mount is nee
 ---
 
 ## Changelog
+
+### v1.4.0 — 2026-10-14 (Docker image under 1 GB, Claude-only runtime)
+
+**1. Self-contained Docker image** — new `Dockerfile`, `.dockerignore`, `docker-compose.yml`.
+Multi-stage build on `python:3.12-slim`, pinned `backend/requirements.lock`, native libs
+stripped, TF-IDF index baked in at build time, non-root user, healthcheck, traces on a
+volume. ~610 MB on disk / ~185 MB download. Every pipeline step defaults to Claude.
+
+**2. Torch-free runtime dependencies**
+- Removed unused `chromadb`, `sentence-transformers`, `openpyxl`, `python-multipart`.
+- Declared `scikit-learn`, which the TF-IDF index uses but was only installed
+  transitively through `sentence-transformers`.
+
+**3. PHI guardrail moved from LLM Guard to Presidio directly**
+- Same API, placeholders and "types and counts only" reporting; spaCy `en_core_web_sm`.
+- MRN / SSN labelled-identifier rules now run inside the analyzer at top confidence, so
+  an MRN spaCy reads as a date, or a sample SSN Presidio would discard, is still redacted.
+- New `tests/test_guardrails.py`; `run_guardrail_eval.py` scores precision/recall 1.0.
+
+**4. Default Claude model is now `claude-sonnet-5-5`** (Claude Sonnet 5.5). Sonnet 4.6
+stays in the catalog; override with `CLAUDE_MODEL`.
 
 ### v1.3.0 — 2026-08-08 (local open-weight models, per-step model picker, hardware awareness)
 
