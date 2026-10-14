@@ -1,20 +1,23 @@
 """
-PHI / PII guardrails using LLM Guard (de-identify, then proceed).
+PHI / PII guardrails using Microsoft Presidio + a small spaCy model
+(de-identify, then proceed).
 
 Before any clinical note is sent to an LLM — Claude or MedGemma — it is scanned
-with LLM Guard's `Anonymize` input scanner. Detected PHI (names, dates, phone
-numbers, SSNs, medical-record numbers, ...) is replaced with placeholders such as
+with Presidio's analyzer. Detected PHI (names, dates, phone numbers, SSNs,
+medical-record numbers, ...) is replaced with placeholders such as
 `[REDACTED_PERSON_1]`, and the sanitized text is what the pipeline actually uses.
 
 Design choices:
 - **De-identify, don't block.** The clinical content the HCC pipeline needs
   (diagnoses, labs, meds) is preserved; only identifiers are removed.
-- **No de-anonymization.** The Vault (placeholder → real value map) never leaves
-  this process and is discarded after each request, so PHI never re-enters the
-  model output or the stored conversation.
+- **No de-anonymization.** No placeholder -> real value map is kept, so PHI never
+  re-enters the model output or the stored conversation.
 - **Never surface raw values.** `findings` reports only entity *types* and counts.
-- **Graceful fallback.** If `llm-guard` (or its spaCy model) is not installed, the
-  app still boots; `deidentify()` returns the text unchanged and flags itself as
+- **Lightweight.** Presidio + `en_core_web_sm` has no torch dependency, which keeps
+  the Docker image small. Override the model with SPACY_MODEL (e.g. en_core_web_lg)
+  if you can afford the size for better name recall.
+- **Graceful fallback.** If `presidio-analyzer` (or its spaCy model) is not installed,
+  the app still boots; `deidentify()` returns the text unchanged and flags itself as
   disabled so the operator knows the guardrail is off.
 """
 import os
@@ -25,9 +28,11 @@ from typing import List, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
+SPACY_MODEL = os.environ.get("SPACY_MODEL", "en_core_web_sm")
+SCORE_THRESHOLD = float(os.environ.get("GUARDRAILS_SCORE_THRESHOLD", "0.4"))
 GUARDRAILS_ENABLED = os.environ.get("GUARDRAILS_ENABLED", "true").lower() in ("1", "true", "yes")
 
-# Entity types tuned for clinical notes (Presidio recognizer names, via LLM Guard).
+# Entity types tuned for clinical notes (Presidio recognizer names).
 DEFAULT_ENTITY_TYPES = [
     "PERSON",
     "DATE_TIME",
@@ -44,7 +49,6 @@ DEFAULT_ENTITY_TYPES = [
 # Supplementary regex for medical-record-number-like identifiers that generic
 # recognizers often miss (e.g. "MRN: 00123456", "MRN 4432219").
 _MRN_RE = re.compile(r"\b(?:MRN|Medical Record(?: Number)?)\s*[:#]?\s*([A-Za-z0-9\-]{4,})", re.IGNORECASE)
-_PLACEHOLDER_TYPE_RE = re.compile(r"\[REDACTED_([A-Z_]+?)_\d+\]")
 
 
 @dataclass
@@ -65,11 +69,10 @@ class DeidResult:
 
 
 class Guardrails:
-    """Lazily-initialized LLM Guard wrapper. One analyzer, reused across requests."""
+    """Lazily-initialized Presidio wrapper. One analyzer, reused across requests."""
 
     def __init__(self):
-        self._scanner = None
-        self._vault = None
+        self._analyzer = None
         self._available = False
         self._init_error: Optional[str] = None
         self._initialized = False
@@ -96,16 +99,16 @@ class Guardrails:
             self._init_error = "disabled via GUARDRAILS_ENABLED"
             return
         try:
-            from llm_guard.input_scanners import Anonymize
-            from llm_guard.vault import Vault
+            from presidio_analyzer import AnalyzerEngine
+            from presidio_analyzer.nlp_engine import NlpEngineProvider
 
-            self._vault = Vault()
-            self._scanner = Anonymize(
-                self._vault,
-                entity_types=DEFAULT_ENTITY_TYPES,
-            )
+            nlp = NlpEngineProvider(nlp_configuration={
+                "nlp_engine_name": "spacy",
+                "models": [{"lang_code": "en", "model_name": SPACY_MODEL}],
+            }).create_engine()
+            self._analyzer = AnalyzerEngine(nlp_engine=nlp, supported_languages=["en"])
             self._available = True
-            logger.info("Guardrails ready — LLM Guard Anonymize scanner initialized")
+            logger.info("Guardrails ready — Presidio analyzer initialized (%s)", SPACY_MODEL)
         except Exception as exc:  # missing package, missing spaCy model, etc.
             self._init_error = str(exc)
             logger.warning(
@@ -126,12 +129,11 @@ class Guardrails:
             )
 
         try:
-            before = len(self._vault.get())
-            # llm-guard's scan() return shape varies by version: older releases
-            # return (sanitized, is_valid); newer ones (sanitized, is_valid, risk).
-            result = self._scanner.scan(text)
-            sanitized = result[0] if isinstance(result, (list, tuple)) else result
-            new_entries = self._vault.get()[before:]
+            results = self._analyzer.analyze(
+                text=text, language="en", entities=DEFAULT_ENTITY_TYPES,
+                score_threshold=SCORE_THRESHOLD,
+            )
+            sanitized, counts = self._replace(text, results)
         except Exception as exc:
             logger.error("De-identification failed, passing text through: %s", exc)
             return DeidResult(text, enabled=True, note=f"scan error: {exc}")
@@ -139,15 +141,11 @@ class Guardrails:
         # Supplementary MRN pass on the already-sanitized text.
         sanitized, mrn_count = self._redact_mrn(sanitized)
 
-        findings = self._summarize(new_entries)
+        findings = [{"entity_type": k, "count": v} for k, v in sorted(counts.items())]
         if mrn_count:
             findings.append({"entity_type": "MRN", "count": mrn_count})
 
-        redacted = bool(findings)
-        # Do not retain PHI: clear this request's entries from the vault.
-        self._clear_vault()
-
-        return DeidResult(sanitized_text=sanitized, redacted=redacted, findings=findings)
+        return DeidResult(sanitized_text=sanitized, redacted=bool(findings), findings=findings)
 
     # ── helpers ───────────────────────────────────────────────────────────────
 
@@ -163,33 +161,27 @@ class Guardrails:
         return _MRN_RE.sub(_sub, text), count
 
     @staticmethod
-    def _summarize(vault_entries: List) -> List[Dict]:
-        """Count findings by entity type from vault (placeholder, value) tuples.
+    def _replace(text: str, results) -> tuple:
+        """Swap detected spans for numbered placeholders.
 
-        Only the placeholder is inspected — raw values are never read or returned.
+        Overlapping spans keep the earliest/longest one. Only entity types and
+        counts are returned; raw values are never retained.
         """
+        ordered = sorted(results, key=lambda r: (r.start, -(r.end - r.start), -r.score))
+        kept, last_end = [], -1
+        for r in ordered:
+            if r.start >= last_end:
+                kept.append(r)
+                last_end = r.end
         counts: Dict[str, int] = {}
-        for entry in vault_entries:
-            placeholder = entry[0] if isinstance(entry, (list, tuple)) else str(entry)
-            m = _PLACEHOLDER_TYPE_RE.search(placeholder)
-            etype = m.group(1) if m else "UNKNOWN"
-            counts[etype] = counts.get(etype, 0) + 1
-        return [{"entity_type": k, "count": v} for k, v in sorted(counts.items())]
-
-    def _clear_vault(self):
-        """Best-effort reset so PHI is not retained between requests."""
-        try:
-            self._vault._tuples.clear()  # LLM Guard stores entries in a private list
-        except Exception:
-            # Fall back to a fresh vault + rebind (rare; keeps memory clean).
-            try:
-                from llm_guard.vault import Vault
-                from llm_guard.input_scanners import Anonymize
-
-                self._vault = Vault()
-                self._scanner = Anonymize(self._vault, entity_types=DEFAULT_ENTITY_TYPES)
-            except Exception:
-                pass
+        out, pos = [], 0
+        for r in kept:
+            counts[r.entity_type] = counts.get(r.entity_type, 0) + 1
+            out.append(text[pos:r.start])
+            out.append(f"[REDACTED_{r.entity_type}_{counts[r.entity_type]}]")
+            pos = r.end
+        out.append(text[pos:])
+        return "".join(out), counts
 
 
 # Module-level singleton

@@ -1,12 +1,11 @@
 fastapi
-uvicorn[standard]
+uvicorn
 anthropic
 openai
 langsmith
-llm-guard
-chromadb
-sentence-transformers
+presidio-analyzer
+spacy
+scikit-learn
 pandas
 python-multipart
 numpy
-openpyxl
