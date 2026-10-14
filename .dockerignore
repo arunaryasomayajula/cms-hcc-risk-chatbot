@@ -1,6 +1,7 @@
 # Only backend/, data/ and frontend/ are needed in the image.
 .git
 .gitignore
+.github
 .claude
 .venv*
 venv/
@@ -12,7 +13,7 @@ env/
 evaluation/
 docs/
 tests/
-README.md
+*.md
 start.bat
 start.sh
 docker-compose.yml
@@ -25,12 +26,11 @@ backend/.airllm_shards/
 .airllm_shards/
 
 # Generated at build time / runtime, or sensitive
-backend/tfidf_index.pkl
+*.pkl
 backend/chroma_db/
 backend/traces/
 traces/
 backend/logs/
 *.log
-.env
-.env.*
+.env*
 *.env

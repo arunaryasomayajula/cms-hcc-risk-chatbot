@@ -31,7 +31,7 @@ from typing import List, Dict, Optional
 logger = logging.getLogger(__name__)
 
 GUARDRAILS_ENABLED = os.environ.get("GUARDRAILS_ENABLED", "true").lower() in ("1", "true", "yes")
-SPACY_MODEL = os.environ.get("GUARDRAILS_SPACY_MODEL", "en_core_web_sm")
+SPACY_MODEL = os.environ.get("GUARDRAILS_SPACY_MODEL") or os.environ.get("SPACY_MODEL", "en_core_web_sm")
 SCORE_THRESHOLD = float(os.environ.get("GUARDRAILS_SCORE_THRESHOLD", "0.35"))
 
 # Entity types tuned for clinical notes (Presidio recognizer names).

@@ -336,7 +336,7 @@ like `[REDACTED_PERSON_1]`) and the pipeline proceeds on the sanitized text. See
 | Variable | Default | Purpose |
 |---|---|---|
 | `GUARDRAILS_ENABLED` | `true` | set `false` to disable de-identification |
-| `GUARDRAILS_SPACY_MODEL` | `en_core_web_sm` | spaCy NER model (install it first; `en_core_web_md` is a middle ground, `_lg` adds ~560 MB) |
+| `GUARDRAILS_SPACY_MODEL` (or `SPACY_MODEL`) | `en_core_web_sm` | spaCy NER model (install it first; `en_core_web_md` is a middle ground, `_lg` adds ~560 MB) |
 | `GUARDRAILS_SCORE_THRESHOLD` | `0.35` | minimum Presidio confidence to redact |
 
 > Earlier versions used LLM Guard's `Anonymize` scanner, which wraps the same Presidio
@@ -483,7 +483,7 @@ Dependencies installed:
 | Package | Purpose |
 |---|---|
 | `fastapi` | Web framework for the REST API |
-| `uvicorn[standard]` | ASGI server |
+| `uvicorn` | ASGI server |
 | `anthropic` | Official Anthropic Python SDK (Claude API) |
 | `openai` | Client for every OpenAI-compatible provider (vLLM, AirLLM sidecar, Ollama) |
 | `langsmith` | Run-tree tracing, written to local JSON (opt-in) |

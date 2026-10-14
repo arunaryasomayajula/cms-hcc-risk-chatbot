@@ -3,7 +3,7 @@
 #   uv pip compile backend/requirements.txt -o backend/requirements.lock \
 #     --python-version 3.12 --python-platform x86_64-unknown-linux-gnu
 fastapi
-uvicorn[standard]
+uvicorn         # plain, not [standard]: uvloop/httptools/watchfiles are not needed here
 anthropic
 openai          # Ollama / vLLM / AirLLM providers (OpenAI-compatible); small, lazy-imported
 langsmith
@@ -12,6 +12,8 @@ numpy
 scikit-learn    # TF-IDF ICD-10 index (rag_icd10.py)
 
 # PHI guardrail: Presidio + a small spaCy model (replaces llm-guard, which
-# pulled in torch + transformers + a DeBERTa NER model).
+# pulled in torch + transformers + a DeBERTa NER model). The model is pinned as
+# a wheel so builds never need `spacy download` at build time.
 presidio-analyzer
+spacy
 en_core_web_sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
