@@ -1,0 +1,13 @@
+.git
+**/__pycache__
+**/*.pyc
+*.pkl
+docs
+tests
+evaluation
+*.md
+start.bat
+start.sh
+backend/requirements-local.txt
+backend/airllm_server.py
+.env*

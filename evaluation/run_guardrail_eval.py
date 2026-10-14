@@ -24,7 +24,7 @@ def evaluate(dataset_path):
     status = guardrails_mod.status()
     if not status.get("available"):
         print(f"  ! Guardrail unavailable: {status.get('error')}")
-        print("    Install llm-guard and run: python -m spacy download en_core_web_lg")
+        print("    Install presidio-analyzer and run: python -m spacy download en_core_web_sm")
         return None, status
 
     cases = load_jsonl(dataset_path)
