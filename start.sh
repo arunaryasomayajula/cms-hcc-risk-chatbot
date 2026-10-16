@@ -1,11 +1,27 @@
 #!/usr/bin/env bash
 # Linux/macOS launcher. Mirrors start.bat.
 #
-#   ./start.sh              # app only
-#   ./start.sh --airllm     # app + the local AirLLM sidecar on port 8002
+#   ./start.sh                   # app only, on $PORT (default 8000)
+#   ./start.sh --port 9000       # listen on another port
+#   ./start.sh --airllm          # app + the local AirLLM sidecar on port 8002
 set -euo pipefail
 
 cd "$(dirname "$0")"
+
+AIRLLM=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --airllm) AIRLLM=1 ;;
+    --port)
+      [ $# -ge 2 ] || { echo "[ERROR] --port needs a value" >&2; exit 2; }
+      PORT="$2"; shift ;;
+    --port=*) PORT="${1#--port=}" ;;
+    *) echo "[ERROR] Unknown option: $1  (use --port N and/or --airllm)" >&2; exit 2 ;;
+  esac
+  shift
+done
+# app.py validates the value and is the single source of the default.
+export PORT="${PORT:-8000}"
 
 echo "============================================================"
 echo " CMS HCC Risk Scoring Chatbot"
@@ -27,7 +43,7 @@ fi
 echo "[1/2] Installing Python dependencies..."
 pip install -r backend/requirements.txt --quiet
 
-if [ "${1:-}" = "--airllm" ]; then
+if [ "$AIRLLM" = 1 ]; then
   echo
   echo "[+] Installing AirLLM dependencies..."
   echo "    NOTE: install a torch wheel matching your GPU FIRST - see backend/requirements-local.txt"
@@ -39,7 +55,7 @@ if [ "${1:-}" = "--airllm" ]; then
 fi
 
 echo
-echo "[2/2] Starting server at http://localhost:8000"
+echo "[2/2] Starting server at http://localhost:${PORT}"
 echo
 echo "NOTE: On first run, the ICD-10 index will be built (~2-5 minutes)."
 echo "      The status badge in the UI will turn green when ready."

@@ -25,10 +25,11 @@ jobs:
 
       - name: Smoke test
         run: |
-          docker run -d --name app -p 8000:8000 cms-hcc-chatbot
+          # Non-default port: exercises PORT end to end (app, EXPOSE, healthcheck).
+          docker run -d --name app -p 9000:9000 -e PORT=9000 cms-hcc-chatbot
           for i in $(seq 1 30); do
-            curl -sf localhost:8000/api/status | grep -q '"initialized":true' && break
+            curl -sf localhost:9000/api/status | grep -q '"initialized":true' && break
             sleep 2
           done
-          curl -sf localhost:8000/api/status | tee /dev/stderr \
+          curl -sf localhost:9000/api/status | tee /dev/stderr \
             | grep -q '"available":true'

@@ -581,6 +581,19 @@ python app.py
 
 Then open **http://localhost:8000** in your browser.
 
+### Choosing the port
+
+Every launcher listens on `PORT` (default `8000`) and binds `HOST` (default `0.0.0.0`).
+`app.py` validates the value, so a bad port fails fast with a clear message.
+
+| Launcher | Custom port |
+|---|---|
+| `start.sh` | `./start.sh --port 9000` or `PORT=9000 ./start.sh` |
+| `start.bat` | `start.bat --port 9000` or `set PORT=9000` first |
+| `python app.py` | `PORT=9000 python app.py` |
+| Docker | `docker run -p 9000:9000 -e PORT=9000 ... cms-hcc-chatbot` |
+| Compose | `PORT=9000 docker compose up` (or `PORT=9000` in `.env`) |
+
 ### Startup sequence
 
 ```

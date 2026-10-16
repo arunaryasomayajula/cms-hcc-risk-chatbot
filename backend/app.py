@@ -368,6 +368,28 @@ async def chat(req: ChatRequest):
         }
 
 
+DEFAULT_PORT = 8000
+
+
+def listen_address() -> tuple:
+    """(host, port) from the HOST / PORT env vars, shared by every launcher.
+
+    Exits with a readable message on a bad PORT rather than a uvicorn traceback.
+    """
+    host = os.environ.get("HOST", "").strip() or "0.0.0.0"
+    raw = os.environ.get("PORT", "").strip() or str(DEFAULT_PORT)
+    try:
+        port = int(raw)
+    except ValueError:
+        port = 0
+    if not 1 <= port <= 65535:
+        sys.exit(f"Invalid PORT={raw!r}: expected an integer between 1 and 65535.")
+    return host, port
+
+
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=False)
+    host, port = listen_address()
+    # Pass the app object, not "app:app": the import string would load this
+    # module a second time (as `app` alongside `__main__`).
+    uvicorn.run(app, host=host, port=port)

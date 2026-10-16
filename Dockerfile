@@ -4,6 +4,7 @@
 #
 #   docker build -t cms-hcc-chatbot .
 #   docker run --rm -p 8000:8000 -e ANTHROPIC_API_KEY=sk-ant-... cms-hcc-chatbot
+#   docker run --rm -p 9000:9000 -e PORT=9000 -e ANTHROPIC_API_KEY=sk-ant-... cms-hcc-chatbot
 
 ARG PYTHON_VERSION=3.12
 
@@ -40,9 +41,15 @@ RUN python -c "from rag_icd10 import ICD10RAG; ICD10RAG().initialize()"
 # ── runtime ──────────────────────────────────────────────────────────────────
 FROM python:${PYTHON_VERSION}-slim
 
+# Listen port. Build-time default (`--build-arg PORT=...`), overridable at run
+# time with `-e PORT=...`; app.py, EXPOSE and the healthcheck all follow it.
+ARG PORT=8000
+
 ENV PATH=/venv/bin:$PATH \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
+    HOST=0.0.0.0 \
+    PORT=${PORT} \
     # Every pipeline step runs on Claude; override per step if you add a sidecar.
     LLM_PROVIDER_EXTRACT=claude \
     LLM_PROVIDER_SELECT=claude \
@@ -61,9 +68,10 @@ COPY frontend /app/frontend
 USER app
 WORKDIR /app/backend
 VOLUME ["/app/traces"]
-EXPOSE 8000
+EXPOSE ${PORT}
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
-  CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/status', timeout=4).status == 200 else 1)"
+  CMD python -c "import os,urllib.request,sys; sys.exit(0 if urllib.request.urlopen(f'http://127.0.0.1:{os.environ[\"PORT\"]}/api/status', timeout=4).status == 200 else 1)"
 
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
+# app.py reads HOST / PORT and validates them (see listen_address()).
+CMD ["python", "app.py"]

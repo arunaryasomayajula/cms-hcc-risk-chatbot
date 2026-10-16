@@ -14,6 +14,21 @@ docker run --rm -p 8000:8000 -e ANTHROPIC_API_KEY cms-hcc-chatbot
 Open http://localhost:8000. `GET /api/status` should report `initialized`,
 `rag_ready` and `guardrails.available` as `true`.
 
+### Port
+
+The container listens on `PORT` (default `8000`). Set it at run time and publish
+the same port; the healthcheck follows it automatically:
+
+```bash
+docker run --rm -p 9000:9000 -e PORT=9000 -e ANTHROPIC_API_KEY cms-hcc-chatbot
+PORT=9000 docker compose up                   # compose maps ${PORT}:${PORT}
+```
+
+To only change the host side, keep the container on 8000 and remap:
+`-p 9000:8000`. `--build-arg PORT=9000` changes the image's baked-in default
+(and its `EXPOSE`). An invalid value (non-integer, outside 1–65535) stops the
+container at start with `Invalid PORT=...`.
+
 ## Size
 
 Measured on Docker 29.8 (linux/amd64):
@@ -51,7 +66,8 @@ docker history cms-hcc-chatbot
 
 ## Runtime notes
 
-- Runs as non-root user `app` (uid 10001). Healthcheck polls `/api/status`.
+- Runs as non-root user `app` (uid 10001). Healthcheck polls `/api/status` on `$PORT`.
+- Starts with `python app.py`, the same entry point as `start.sh` / `start.bat`.
 - Traces (`LANGSMITH_TRACING=1`) contain clinical text and are written to the
   `/app/traces` volume, never into the image.
 - `LLM_PROVIDER_EXTRACT|SELECT|EXPLAIN` default to `claude`; set `CLAUDE_MODEL` to pick

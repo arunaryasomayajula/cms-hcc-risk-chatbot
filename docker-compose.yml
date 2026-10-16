@@ -1,13 +1,15 @@
 # docker compose up --build
-# Reads ANTHROPIC_API_KEY from the shell or a .env file.
+# PORT=9000 docker compose up --build      # listen on another port
+# Reads ANTHROPIC_API_KEY (and optional PORT) from the shell or a .env file.
 # Traces stay local (on the `traces` volume) — see backend/tracing.py.
 services:
   app:
     build: .
     image: cms-hcc-chatbot
     ports:
-      - "8000:8000"
+      - "${PORT:-8000}:${PORT:-8000}"
     environment:
+      PORT: ${PORT:-8000}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:?set ANTHROPIC_API_KEY}
       CLAUDE_MODEL: ${CLAUDE_MODEL:-claude-sonnet-5-5}
       LANGSMITH_TRACING: ${LANGSMITH_TRACING:-0}
