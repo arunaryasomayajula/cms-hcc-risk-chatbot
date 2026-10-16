@@ -1,0 +1,8 @@
+# Launch scripts must keep their platform's line endings regardless of the
+# cloner's core.autocrlf: cmd.exe mis-resolves `goto` labels in LF-only batch
+# files, and bash fails on CRLF (`$'\r': command not found`), e.g. when a
+# Windows checkout is bind-mounted into a Linux container.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.sh  text eol=lf
+Dockerfile text eol=lf
