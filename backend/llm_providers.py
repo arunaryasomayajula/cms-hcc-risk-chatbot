@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 
 # ── Configuration (env-driven) ───────────────────────────────────────────────
 
-CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6")
+CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-5-5")
 
 # Default to 127.0.0.1, not "localhost". On Windows "localhost" resolves to ::1
 # first; local servers usually bind IPv4 only, so every probe eats a full timeout
@@ -172,7 +172,8 @@ def _ollama_models() -> Tuple[ModelSpec, ...]:
 
 def _claude_models() -> Tuple[ModelSpec, ...]:
     return (
-        ModelSpec("claude-sonnet-4-6", "Claude Sonnet 4.6", {"*": "balanced default"}),
+        ModelSpec("claude-sonnet-5-5", "Claude Sonnet 5.5", {"*": "balanced default"}),
+        ModelSpec("claude-sonnet-4-6", "Claude Sonnet 4.6", {"*": "previous default"}),
         ModelSpec("claude-opus-4-1", "Claude Opus 4.1", {"*": "highest quality"}),
         ModelSpec("claude-haiku-4-5", "Claude Haiku 4.5", {"*": "fastest / cheapest"}),
     )

@@ -1,24 +1,26 @@
 """
-PHI / PII guardrails using Microsoft Presidio + a small spaCy model
-(de-identify, then proceed).
+PHI / PII guardrails using Microsoft Presidio (de-identify, then proceed).
 
 Before any clinical note is sent to an LLM — Claude or MedGemma — it is scanned
-with Presidio's analyzer. Detected PHI (names, dates, phone numbers, SSNs,
-medical-record numbers, ...) is replaced with placeholders such as
-`[REDACTED_PERSON_1]`, and the sanitized text is what the pipeline actually uses.
+with Presidio's `AnalyzerEngine` (regex/checksum recognizers + spaCy NER).
+Detected PHI (names, dates, phone numbers, SSNs, medical-record numbers, ...) is
+replaced with placeholders such as `[REDACTED_PERSON_1]`, and the sanitized text
+is what the pipeline actually uses.
+
+Presidio is used directly rather than through LLM Guard: LLM Guard's `Anonymize`
+wraps the same analyzer but hard-depends on torch + transformers, which alone
+put the Docker image several GB over budget (see docs/docker.md).
 
 Design choices:
 - **De-identify, don't block.** The clinical content the HCC pipeline needs
   (diagnoses, labs, meds) is preserved; only identifiers are removed.
-- **No de-anonymization.** No placeholder -> real value map is kept, so PHI never
-  re-enters the model output or the stored conversation.
+- **No de-anonymization.** The placeholder → real value map exists only inside
+  one `deidentify()` call, so PHI never re-enters the model output or the stored
+  conversation.
 - **Never surface raw values.** `findings` reports only entity *types* and counts.
-- **Lightweight.** Presidio + `en_core_web_sm` has no torch dependency, which keeps
-  the Docker image small. Override the model with SPACY_MODEL (e.g. en_core_web_lg)
-  if you can afford the size for better name recall.
-- **Graceful fallback.** If `presidio-analyzer` (or its spaCy model) is not installed,
-  the app still boots; `deidentify()` returns the text unchanged and flags itself as
-  disabled so the operator knows the guardrail is off.
+- **Graceful fallback.** If `presidio-analyzer` (or its spaCy model) is not
+  installed, the app still boots; `deidentify()` returns the text unchanged and
+  flags itself as disabled so the operator knows the guardrail is off.
 """
 import os
 import re
@@ -28,9 +30,9 @@ from typing import List, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
-SPACY_MODEL = os.environ.get("SPACY_MODEL", "en_core_web_sm")
-SCORE_THRESHOLD = float(os.environ.get("GUARDRAILS_SCORE_THRESHOLD", "0.4"))
 GUARDRAILS_ENABLED = os.environ.get("GUARDRAILS_ENABLED", "true").lower() in ("1", "true", "yes")
+SPACY_MODEL = os.environ.get("GUARDRAILS_SPACY_MODEL") or os.environ.get("SPACY_MODEL", "en_core_web_sm")
+SCORE_THRESHOLD = float(os.environ.get("GUARDRAILS_SCORE_THRESHOLD", "0.35"))
 
 # Entity types tuned for clinical notes (Presidio recognizer names).
 DEFAULT_ENTITY_TYPES = [
@@ -46,9 +48,17 @@ DEFAULT_ENTITY_TYPES = [
     "URL",
 ]
 
-# Supplementary regex for medical-record-number-like identifiers that generic
-# recognizers often miss (e.g. "MRN: 00123456", "MRN 4432219").
-_MRN_RE = re.compile(r"\b(?:MRN|Medical Record(?: Number)?)\s*[:#]?\s*([A-Za-z0-9\-]{4,})", re.IGNORECASE)
+# Labelled identifiers. A value written after an "MRN" / "SSN" label is PHI no
+# matter what it looks like, so these score 1.0 and win any overlap — otherwise
+# spaCy tags "MRN: 00123456" as a DATE, and Presidio's generic SSN recognizer
+# discards well-known sample numbers such as 123-45-6789. The label itself is
+# kept (lookbehind; Presidio matches with the `regex` module, which allows
+# variable-width lookbehind).
+_LABELLED_PATTERNS = {
+    "MRN": r"(?<=\b(?:MRN|Medical Record(?: Number)?)\s*[:#]?\s*)[A-Za-z0-9\-]{4,}",
+    "US_SSN": r"(?<=\b(?:SSN|Social Security(?: Number| No\.?)?)\s*[:#]?\s*)\d{3}[- ]?\d{2}[- ]?\d{4}\b",
+}
+_PLACEHOLDER_TYPE_RE = re.compile(r"\[REDACTED_([A-Z_]+?)_\d+\]")
 
 
 @dataclass
@@ -89,6 +99,8 @@ class Guardrails:
             "available": self._available,
             "error": self._init_error,
             "entity_types": DEFAULT_ENTITY_TYPES,
+            "spacy_model": SPACY_MODEL,
+            "score_threshold": SCORE_THRESHOLD,
         }
 
     def _ensure_init(self):
@@ -99,14 +111,30 @@ class Guardrails:
             self._init_error = "disabled via GUARDRAILS_ENABLED"
             return
         try:
-            from presidio_analyzer import AnalyzerEngine
+            from presidio_analyzer import AnalyzerEngine, Pattern, PatternRecognizer
             from presidio_analyzer.nlp_engine import NlpEngineProvider
 
-            nlp = NlpEngineProvider(nlp_configuration={
+            # Name the model explicitly: Presidio's default config asks for
+            # en_core_web_lg (~560 MB) and tries to download it at runtime.
+            nlp_engine = NlpEngineProvider(nlp_configuration={
                 "nlp_engine_name": "spacy",
                 "models": [{"lang_code": "en", "model_name": SPACY_MODEL}],
             }).create_engine()
-            self._analyzer = AnalyzerEngine(nlp_engine=nlp, supported_languages=["en"])
+            # Presidio warns once per non-English recognizer it skips; silence
+            # just that construction step.
+            presidio_log = logging.getLogger("presidio-analyzer")
+            prev_level = presidio_log.level
+            presidio_log.setLevel(logging.ERROR)
+            try:
+                self._analyzer = AnalyzerEngine(nlp_engine=nlp_engine, supported_languages=["en"])
+            finally:
+                presidio_log.setLevel(prev_level)
+            for entity, regex in _LABELLED_PATTERNS.items():
+                self._analyzer.registry.add_recognizer(PatternRecognizer(
+                    supported_entity=entity,
+                    name=f"Labelled{entity}Recognizer",
+                    patterns=[Pattern(f"labelled {entity}", regex, 1.0)],
+                ))
             self._available = True
             logger.info("Guardrails ready — Presidio analyzer initialized (%s)", SPACY_MODEL)
         except Exception as exc:  # missing package, missing spaCy model, etc.
@@ -130,58 +158,58 @@ class Guardrails:
 
         try:
             results = self._analyzer.analyze(
-                text=text, language="en", entities=DEFAULT_ENTITY_TYPES,
+                text=text,
+                entities=DEFAULT_ENTITY_TYPES + ["MRN"],
+                language="en",
                 score_threshold=SCORE_THRESHOLD,
             )
-            sanitized, counts = self._replace(text, results)
+            sanitized, placeholders = self._replace(text, results)
         except Exception as exc:
             logger.error("De-identification failed, passing text through: %s", exc)
             return DeidResult(text, enabled=True, note=f"scan error: {exc}")
 
-        # Supplementary MRN pass on the already-sanitized text.
-        sanitized, mrn_count = self._redact_mrn(sanitized)
-
-        findings = [{"entity_type": k, "count": v} for k, v in sorted(counts.items())]
-        if mrn_count:
-            findings.append({"entity_type": "MRN", "count": mrn_count})
-
+        findings = self._summarize(placeholders)
         return DeidResult(sanitized_text=sanitized, redacted=bool(findings), findings=findings)
 
     # ── helpers ───────────────────────────────────────────────────────────────
 
     @staticmethod
-    def _redact_mrn(text: str) -> tuple:
-        count = 0
+    def _replace(text: str, results: List) -> tuple:
+        """Swap detected spans for `[REDACTED_<TYPE>_<n>]` placeholders.
 
-        def _sub(m):
-            nonlocal count
-            count += 1
-            return f"MRN [REDACTED_MRN_{count}]"
-
-        return _MRN_RE.sub(_sub, text), count
-
-    @staticmethod
-    def _replace(text: str, results) -> tuple:
-        """Swap detected spans for numbered placeholders.
-
-        Overlapping spans keep the earliest/longest one. Only entity types and
-        counts are returned; raw values are never retained.
+        Overlapping detections are resolved by keeping the highest-scoring (then
+        longest) span. Repeats of the same value share one placeholder. Returns
+        the sanitized text and the distinct placeholders used — never raw values.
         """
-        ordered = sorted(results, key=lambda r: (r.start, -(r.end - r.start), -r.score))
-        kept, last_end = [], -1
-        for r in ordered:
-            if r.start >= last_end:
+        kept = []
+        for r in sorted(results, key=lambda r: (-r.score, -(r.end - r.start))):
+            if all(r.end <= k.start or r.start >= k.end for k in kept):
                 kept.append(r)
-                last_end = r.end
-        counts: Dict[str, int] = {}
+        kept.sort(key=lambda r: r.start)
+
+        by_value: Dict[tuple, str] = {}
+        per_type: Dict[str, int] = {}
         out, pos = [], 0
         for r in kept:
-            counts[r.entity_type] = counts.get(r.entity_type, 0) + 1
+            key = (r.entity_type, text[r.start:r.end].strip().lower())
+            if key not in by_value:
+                per_type[r.entity_type] = per_type.get(r.entity_type, 0) + 1
+                by_value[key] = f"[REDACTED_{r.entity_type}_{per_type[r.entity_type]}]"
             out.append(text[pos:r.start])
-            out.append(f"[REDACTED_{r.entity_type}_{counts[r.entity_type]}]")
+            out.append(by_value[key])
             pos = r.end
         out.append(text[pos:])
-        return "".join(out), counts
+        return "".join(out), list(by_value.values())
+
+    @staticmethod
+    def _summarize(placeholders: List[str]) -> List[Dict]:
+        """Count findings by entity type from the placeholders that were issued."""
+        counts: Dict[str, int] = {}
+        for placeholder in placeholders:
+            m = _PLACEHOLDER_TYPE_RE.search(placeholder)
+            etype = m.group(1) if m else "UNKNOWN"
+            counts[etype] = counts.get(etype, 0) + 1
+        return [{"entity_type": k, "count": v} for k, v in sorted(counts.items())]
 
 
 # Module-level singleton

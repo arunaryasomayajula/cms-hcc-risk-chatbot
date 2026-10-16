@@ -9,8 +9,6 @@ real backend modules (`rag_icd10`, `hcc_calculator`, `llm_providers`, `guardrail
 ```bash
 # From the repo root, with the app deps already installed:
 pip install -r evaluation/requirements.txt
-# Guardrail eval also needs the spaCy model used by LLM Guard:
-python -m spacy download en_core_web_lg
 ```
 
 The CMS reference CSVs are bundled in the repo under `data/`, so the RAG index and
@@ -22,7 +20,7 @@ HCC calculator load with no extra setup (override with `CMS_DATA_PATH` if needed
 |---|---|---|
 | `run_rag_eval.py` | ICD-10 retrieval quality: `recall@k`, `MRR`, pool precision vs the gold codes | No |
 | `run_provider_comparison.py` | Any providers/models: ICD-10 code F1, HCC set, risk score, per-step latency | Yes (both providers) |
-| `run_guardrail_eval.py` | PHI detection precision/recall + that clinical terms survive de-identification | No (local LLM Guard) |
+| `run_guardrail_eval.py` | PHI detection precision/recall + that clinical terms survive de-identification | No (local Presidio + spaCy) |
 | `run_h2o_sonar_eval.py` | PII leakage, toxicity, fairness/bias over model outputs (H2O sonar, with fallback) | Only when generating fresh outputs |
 
 ## Running

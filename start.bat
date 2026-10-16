@@ -1,5 +1,30 @@
 @echo off
 setlocal
+:: Usage:  start.bat [--port N] [--airllm]      (PORT env var also works; default 8000)
+set "AIRLLM="
+if not defined PORT set "PORT=8000"
+:parse_args
+if "%~1"=="" goto args_done
+if /i "%~1"=="--airllm" (
+    set "AIRLLM=1"
+    shift
+    goto parse_args
+)
+:: cmd splits on "=", so --port=9000 arrives here as --port 9000 too.
+if /i "%~1"=="--port" (
+    if "%~2"=="" (
+        echo [ERROR] --port needs a value
+        exit /b 2
+    )
+    set "PORT=%~2"
+    shift
+    shift
+    goto parse_args
+)
+echo [ERROR] Unknown option: %~1  ^(use --port N and/or --airllm^)
+exit /b 2
+:args_done
+
 echo ============================================================
 echo  CMS HCC Risk Scoring Chatbot
 echo ============================================================
@@ -28,7 +53,7 @@ if %errorlevel% neq 0 (
 )
 
 :: Optional: launch the AirLLM sidecar alongside the app  (start.bat --airllm)
-if /i "%1"=="--airllm" (
+if defined AIRLLM (
     echo.
     echo [+] Installing AirLLM dependencies...
     pip install -r backend\requirements-local.txt --quiet
@@ -40,7 +65,7 @@ if /i "%1"=="--airllm" (
 )
 
 echo.
-echo [2/2] Starting server at http://localhost:8000
+echo [2/2] Starting server at http://localhost:%PORT%
 echo.
 echo NOTE: On first run, the ICD-10 index will be built (~2-5 minutes).
 echo       The status badge in the UI will turn green when ready.

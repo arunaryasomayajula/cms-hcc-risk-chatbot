@@ -1,24 +1,87 @@
-# syntax=docker/dockerfile:1
-FROM python:3.12-slim AS builder
-ENV PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1
-RUN python -m venv /opt/venv
-ENV PATH="/opt/venv/bin:$PATH"
-COPY backend/requirements.txt /tmp/requirements.txt
-RUN pip install -r /tmp/requirements.txt \
- && python -m spacy download en_core_web_sm \
- && find /opt/venv -type d -name __pycache__ -prune -exec rm -rf {} + \
- && find /opt/venv -type d \( -name tests -o -name test \) -path "*/site-packages/*" -prune -exec rm -rf {} +
+# CMS HCC Risk Scoring Chatbot — self-contained app image (< 1 GB).
+# The LLM is Claude via the Anthropic API; no model weights live in the image.
+# See docs/docker.md for the size budget and how it was reached.
+#
+#   docker build -t cms-hcc-chatbot .
+#   docker run --rm -p 8000:8000 -e ANTHROPIC_API_KEY=sk-ant-... cms-hcc-chatbot
+#   docker run --rm -p 9000:9000 -e PORT=9000 -e ANTHROPIC_API_KEY=sk-ant-... cms-hcc-chatbot
+
+ARG PYTHON_VERSION=3.12
+
+# ── builder: resolve + install pinned deps into an isolated venv ─────────────
+FROM python:${PYTHON_VERSION}-slim AS builder
+
+ENV PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+RUN python -m venv /venv
+ENV PATH=/venv/bin:$PATH
+
+# binutils provides `strip`; it stays in this throwaway stage.
+RUN apt-get update && apt-get install -y --no-install-recommends binutils \
+ && rm -rf /var/lib/apt/lists/*
+
+COPY backend/requirements.lock /tmp/requirements.lock
+RUN pip install -r /tmp/requirements.lock \
+    # Test suites and C sources shipped inside wheels are never used at runtime.
+ && find /venv -depth -type d \( -name tests -o -name test \) -path '*/site-packages/*' -exec rm -rf {} + \
+ && find /venv -type f \( -name '*.pyx' -o -name '*.pxd' -o -name '*.c' -o -name '*.h' \) -delete \
+    # Many manylinux wheels ship unstripped native libs; debug symbols are
+    # dead weight in production (~40% of the venv's .so bytes).
+ && find /venv -type f -name '*.so*' -exec strip --strip-unneeded {} + \
+ && pip uninstall -y pip setuptools wheel
+
+# Bake the TF-IDF ICD-10 index into the image so startup does not refit it and
+# the runtime user never needs write access to /app/backend.
 COPY backend /app/backend
 COPY data /app/data
-RUN cd /app/backend && python -c "import rag_icd10; rag_icd10.ICD10RAG().initialize()"
+WORKDIR /app/backend
+RUN python -c "from rag_icd10 import ICD10RAG; ICD10RAG().initialize()"
 
-FROM python:3.12-slim
-ENV PATH="/opt/venv/bin:$PATH" PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
-RUN useradd --create-home --uid 10001 app
-COPY --from=builder /opt/venv /opt/venv
-COPY --from=builder --chown=app:app /app /app
-COPY --chown=app:app frontend /app/frontend
+# ── runtime ──────────────────────────────────────────────────────────────────
+FROM python:${PYTHON_VERSION}-slim
+
+# Listen port. Build-time default (`--build-arg PORT=...`), overridable at run
+# time with `-e PORT=...` or `--port N`; start.sh, app.py, EXPOSE and the
+# healthcheck all follow it.
+ARG PORT=8000
+
+ENV PATH=/venv/bin:$PATH \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    HOST=0.0.0.0 \
+    PORT=${PORT} \
+    # start.sh: deps are already in /venv (pip is not even installed), and the
+    # resolved port is recorded for the healthcheck.
+    SKIP_INSTALL=1 \
+    PORT_FILE=/tmp/app.port \
+    # Every pipeline step runs on Claude; override per step if you add a sidecar.
+    LLM_PROVIDER_EXTRACT=claude \
+    LLM_PROVIDER_SELECT=claude \
+    LLM_PROVIDER_EXPLAIN=claude \
+    # Traces contain clinical text — keep them on a volume, never in the image.
+    LANGSMITH_TRACE_DIR=/app/traces
+
+RUN useradd --create-home --uid 10001 app \
+ && mkdir -p /app/traces && chown app:app /app/traces
+
+COPY --from=builder /venv /venv
+COPY --from=builder /app/backend /app/backend
+COPY data /app/data
+COPY frontend /app/frontend
+COPY --chmod=755 start.sh /app/start.sh
+
 USER app
 WORKDIR /app/backend
-EXPOSE 8000
-CMD ["python", "app.py"]
+VOLUME ["/app/traces"]
+EXPOSE ${PORT}
+
+# Port comes from PORT_FILE (written by start.sh, so `--port N` is honoured),
+# falling back to $PORT.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+  CMD python -c "import os,sys,urllib.request; f=os.environ.get('PORT_FILE',''); p=open(f).read().strip() if f and os.path.exists(f) else os.environ['PORT']; sys.exit(0 if urllib.request.urlopen(f'http://127.0.0.1:{p}/api/status', timeout=4).status == 200 else 1)"
+
+# Same launcher as local runs. Arguments after the image name go to start.sh:
+#   docker run -p 9000:9000 cms-hcc-chatbot --port 9000
+ENTRYPOINT ["/app/start.sh"]
+CMD []
