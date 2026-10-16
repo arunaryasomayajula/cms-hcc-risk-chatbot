@@ -15,7 +15,6 @@ docs/
 tests/
 *.md
 start.bat
-start.sh
 docker-compose.yml
 Dockerfile
 

@@ -21,8 +21,14 @@ the same port; the healthcheck follows it automatically:
 
 ```bash
 docker run --rm -p 9000:9000 -e PORT=9000 -e ANTHROPIC_API_KEY cms-hcc-chatbot
+docker run --rm -p 9000:9000 -e ANTHROPIC_API_KEY cms-hcc-chatbot --port 9000
 PORT=9000 docker compose up                   # compose maps ${PORT}:${PORT}
 ```
+
+The image's `ENTRYPOINT` is `start.sh` (the same launcher used locally), so
+arguments after the image name are passed to it. In the image it runs with
+`SKIP_INSTALL=1` (dependencies are baked in) and `exec`s `python app.py`, so the
+app is PID 1 and `docker stop` shuts it down cleanly.
 
 To only change the host side, keep the container on 8000 and remap:
 `-p 9000:8000`. `--build-arg PORT=9000` changes the image's baked-in default
@@ -67,7 +73,8 @@ docker history cms-hcc-chatbot
 ## Runtime notes
 
 - Runs as non-root user `app` (uid 10001). Healthcheck polls `/api/status` on `$PORT`.
-- Starts with `python app.py`, the same entry point as `start.sh` / `start.bat`.
+- Entrypoint is `/app/start.sh` → `exec python app.py`. `--airllm` is rejected in
+  the image (the sidecar isn't included).
 - Traces (`LANGSMITH_TRACING=1`) contain clinical text and are written to the
   `/app/traces` volume, never into the image.
 - `LLM_PROVIDER_EXTRACT|SELECT|EXPLAIN` default to `claude`; set `CLAUDE_MODEL` to pick

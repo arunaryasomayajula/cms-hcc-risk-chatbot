@@ -42,7 +42,8 @@ RUN python -c "from rag_icd10 import ICD10RAG; ICD10RAG().initialize()"
 FROM python:${PYTHON_VERSION}-slim
 
 # Listen port. Build-time default (`--build-arg PORT=...`), overridable at run
-# time with `-e PORT=...`; app.py, EXPOSE and the healthcheck all follow it.
+# time with `-e PORT=...` or `--port N`; start.sh, app.py, EXPOSE and the
+# healthcheck all follow it.
 ARG PORT=8000
 
 ENV PATH=/venv/bin:$PATH \
@@ -50,6 +51,10 @@ ENV PATH=/venv/bin:$PATH \
     PYTHONDONTWRITEBYTECODE=1 \
     HOST=0.0.0.0 \
     PORT=${PORT} \
+    # start.sh: deps are already in /venv (pip is not even installed), and the
+    # resolved port is recorded for the healthcheck.
+    SKIP_INSTALL=1 \
+    PORT_FILE=/tmp/app.port \
     # Every pipeline step runs on Claude; override per step if you add a sidecar.
     LLM_PROVIDER_EXTRACT=claude \
     LLM_PROVIDER_SELECT=claude \
@@ -64,14 +69,19 @@ COPY --from=builder /venv /venv
 COPY --from=builder /app/backend /app/backend
 COPY data /app/data
 COPY frontend /app/frontend
+COPY --chmod=755 start.sh /app/start.sh
 
 USER app
 WORKDIR /app/backend
 VOLUME ["/app/traces"]
 EXPOSE ${PORT}
 
+# Port comes from PORT_FILE (written by start.sh, so `--port N` is honoured),
+# falling back to $PORT.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
-  CMD python -c "import os,urllib.request,sys; sys.exit(0 if urllib.request.urlopen(f'http://127.0.0.1:{os.environ[\"PORT\"]}/api/status', timeout=4).status == 200 else 1)"
+  CMD python -c "import os,sys,urllib.request; f=os.environ.get('PORT_FILE',''); p=open(f).read().strip() if f and os.path.exists(f) else os.environ['PORT']; sys.exit(0 if urllib.request.urlopen(f'http://127.0.0.1:{p}/api/status', timeout=4).status == 200 else 1)"
 
-# app.py reads HOST / PORT and validates them (see listen_address()).
-CMD ["python", "app.py"]
+# Same launcher as local runs. Arguments after the image name go to start.sh:
+#   docker run -p 9000:9000 cms-hcc-chatbot --port 9000
+ENTRYPOINT ["/app/start.sh"]
+CMD []

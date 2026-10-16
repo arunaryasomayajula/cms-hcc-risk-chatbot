@@ -1,9 +1,15 @@
 #!/usr/bin/env bash
-# Linux/macOS launcher. Mirrors start.bat.
+# Linux/macOS launcher. Mirrors start.bat. Also the Docker image's ENTRYPOINT.
 #
 #   ./start.sh                   # app only, on $PORT (default 8000)
 #   ./start.sh --port 9000       # listen on another port
 #   ./start.sh --airllm          # app + the local AirLLM sidecar on port 8002
+#
+# Environment:
+#   PORT / HOST     listen address (validated by backend/app.py)
+#   SKIP_INSTALL=1  don't pip install (set in the Docker image: deps are baked in)
+#   PORT_FILE       if set, the resolved port is written here (the Docker
+#                   healthcheck reads it, so `--port` works there too)
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -40,8 +46,17 @@ if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
   echo
 fi
 
-echo "[1/2] Installing Python dependencies..."
-pip install -r backend/requirements.txt --quiet
+if [ "${SKIP_INSTALL:-0}" = 1 ]; then
+  echo "[1/2] Skipping dependency install (SKIP_INSTALL=1)."
+else
+  echo "[1/2] Installing Python dependencies..."
+  pip install -r backend/requirements.txt --quiet
+fi
+
+if [ "$AIRLLM" = 1 ] && [ ! -f backend/airllm_server.py ]; then
+  echo "[ERROR] --airllm: backend/airllm_server.py is not present (it is excluded from the Docker image)." >&2
+  exit 2
+fi
 
 if [ "$AIRLLM" = 1 ]; then
   echo
@@ -63,5 +78,11 @@ echo
 echo "Press Ctrl+C to stop."
 echo
 
+if [ -n "${PORT_FILE:-}" ]; then
+  printf '%s\n' "$PORT" > "$PORT_FILE"
+fi
+
 cd backend
-python app.py
+# exec: python replaces this shell, so it is PID 1 in a container and receives
+# SIGTERM from `docker stop` directly (bash would not forward it).
+exec python app.py
